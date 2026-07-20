@@ -5,6 +5,24 @@ All notable changes to `cdp-browser-lite` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-07-20
+
+### Fixed
+- Windows build under `clippy -D warnings`: the `grace` parameter and the
+  `TERMINATE_POLL` constant in `ChromeProcess::terminate` are only used by the
+  Unix SIGTERM grace loop, so they are now gated to `cfg(unix)` and no longer
+  trip the dead-code lint on non-Unix targets.
+- Flaky `ports` unit tests on CI: they no longer assume that ports contiguous to
+  an ephemeral one are free. A `reserve_contiguous` helper binds a real
+  contiguous block (with `u16` overflow guard), making the search tests
+  deterministic across runners.
+
+### Changed
+- Release workflow now creates the GitHub release once in a dedicated
+  `create-release` job that the build matrix `needs`, instead of letting the
+  four parallel target jobs race to create the same tag (which failed with
+  `already_exists` on `tag_name`). Build jobs only upload their assets.
+
 ## [0.1.0] - 2026-07-20
 
 ### Added
@@ -45,4 +63,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supported platform, plus an E2E job that installs Chrome and runs the
   ignored tests.
 
+[0.1.1]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.1.1
 [0.1.0]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.1.0

@@ -45,6 +45,32 @@ mod tests {
         port
     }
 
+    /// Reserves a contiguous run of `count` ports and returns the base plus the
+    /// listeners holding them. Retries until it actually finds a free contiguous
+    /// block, so the test never assumes `base+1`, `base+2`, ... happen to be free
+    /// on the runner (the source of the earlier macOS flake) and never overflows
+    /// `u16`.
+    fn reserve_contiguous(count: u16) -> (u16, Vec<TcpListener>) {
+        for _ in 0..100 {
+            let first = TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = first.local_addr().unwrap().port();
+            if base.checked_add(count).is_none() {
+                continue; // too close to u16::MAX for the range; try another base
+            }
+            let mut held = vec![first];
+            for offset in 1..count {
+                match TcpListener::bind(("127.0.0.1", base + offset)) {
+                    Ok(listener) => held.push(listener),
+                    Err(_) => break,
+                }
+            }
+            if held.len() == count as usize {
+                return (base, held);
+            }
+        }
+        panic!("could not reserve {count} contiguous free ports after 100 attempts");
+    }
+
     #[tokio::test]
     async fn given_base_free_when_searching_then_returns_base() {
         let base = pick_ephemeral_port();
@@ -56,10 +82,10 @@ mod tests {
 
     #[tokio::test]
     async fn given_base_occupied_when_searching_then_returns_next_free() {
-        let base = pick_ephemeral_port();
-        let _occupy: Vec<TcpListener> = (0..3)
-            .map(|i| TcpListener::bind(("127.0.0.1", base + i)).unwrap())
-            .collect();
+        // Reserve base..base+10 contiguously, then free everything from offset 3
+        // onward: base..base+3 stay occupied, base+3..base+10 are free.
+        let (base, mut held) = reserve_contiguous(10);
+        held.truncate(3);
 
         let result = find_free_port_near("127.0.0.1", base, 10)
             .await
@@ -78,10 +104,8 @@ mod tests {
 
     #[tokio::test]
     async fn given_no_free_port_in_range_when_searching_then_port_conflict() {
-        let base = pick_ephemeral_port();
-        let _occupy: Vec<TcpListener> = (0..10)
-            .map(|i| TcpListener::bind(("127.0.0.1", base + i)).unwrap())
-            .collect();
+        // Keep the whole base..base+10 range occupied so the search must fail.
+        let (base, _occupy) = reserve_contiguous(10);
 
         let result = find_free_port_near("127.0.0.1", base, 10).await;
         match result {

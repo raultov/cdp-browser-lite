@@ -12,6 +12,9 @@ use crate::profile::Profile;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+// Only referenced by the Unix grace-period loop; on Windows termination is a
+// direct `start_kill()`, so gate the constant to avoid a dead-code warning.
+#[cfg(unix)]
 const TERMINATE_POLL: Duration = Duration::from_millis(50);
 
 /// Handle to a live Chrome process. Built via [`spawn`] and terminated with
@@ -51,6 +54,9 @@ impl ChromeProcess {
     /// Returns `Ok(())` once the process has been collected. It is idempotent:
     /// if already terminated, it just completes the pending `wait()`.
     #[doc(hidden)]
+    // `grace` is only consumed by the Unix SIGTERM wait; on Windows we go
+    // straight to `start_kill()`, so the parameter is legitimately unused there.
+    #[cfg_attr(not(unix), allow(unused_variables))]
     pub async fn terminate(&mut self, grace: Duration) -> Result<(), BrowserError> {
         if !self.is_running() {
             let _ = self.child.wait().await;
