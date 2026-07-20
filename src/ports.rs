@@ -50,6 +50,11 @@ mod tests {
     /// block, so the test never assumes `base+1`, `base+2`, ... happen to be free
     /// on the runner (the source of the earlier macOS flake) and never overflows
     /// `u16`.
+    ///
+    /// Unix-only: it relies on POSIX `bind` exclusivity (a second bind to a held
+    /// port fails). Windows loopback does not reliably enforce that in-process,
+    /// so the occupancy-based tests below are gated to `cfg(unix)`.
+    #[cfg(unix)]
     fn reserve_contiguous(count: u16) -> (u16, Vec<TcpListener>) {
         for _ in 0..100 {
             let first = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -71,6 +76,10 @@ mod tests {
         panic!("could not reserve {count} contiguous free ports after 100 attempts");
     }
 
+    // Relies on POSIX bind semantics (freed ephemeral port is immediately
+    // rebindable to the exact same number); Windows loopback does not guarantee
+    // this, so keep it Unix-only.
+    #[cfg(unix)]
     #[tokio::test]
     async fn given_base_free_when_searching_then_returns_base() {
         let base = pick_ephemeral_port();
@@ -80,6 +89,7 @@ mod tests {
         assert_eq!(result, base);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn given_base_occupied_when_searching_then_returns_next_free() {
         // Reserve base..base+10 contiguously, then free everything from offset 3
@@ -102,6 +112,7 @@ mod tests {
         assert_ne!(result, base, "must not return the occupied base");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn given_no_free_port_in_range_when_searching_then_port_conflict() {
         // Keep the whole base..base+10 range occupied so the search must fail.

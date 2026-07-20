@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Flaky `ports` unit tests on CI: they no longer assume that ports contiguous to
   an ephemeral one are free. A `reserve_contiguous` helper binds a real
   contiguous block (with `u16` overflow guard), making the search tests
-  deterministic across runners.
+  deterministic across runners. The occupancy-based tests, which depend on POSIX
+  `bind` exclusivity that Windows loopback does not guarantee in-process, are
+  gated to `cfg(unix)`; the platform-agnostic `tries == 0` case stays universal.
 
 ### Changed
 - Release workflow now creates the GitHub release once in a dedicated
