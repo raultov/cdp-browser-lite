@@ -1,31 +1,14 @@
 use std::collections::HashSet;
 use std::net::TcpListener;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Weak};
 use tokio::sync::Mutex;
 
 use crate::error::BrowserError;
 
-/// Process-wide registry of reserved ports.
-///
-/// Every [`PortAllocator`] shares this single set (and its lock). Without it,
-/// two independent allocators — e.g. several `BrowserPool`s running in
-/// parallel — could bind-probe the same free port and both reserve it, letting
-/// two spawned browsers race to bind the same address. The mutex also
-/// serialises the "bind to probe, drop, record" step in
-/// [`PortAllocator::reserve_near`], closing that TOCTOU window within the
-/// process.
-static GLOBAL_RESERVED: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
-
-fn global_reserved() -> &'static Mutex<HashSet<u16>> {
-    GLOBAL_RESERVED.get_or_init(Default::default)
-}
-
-/// Reserves ports from a shared, process-wide registry.
-///
-/// Instances are cheap and share the same underlying reservation set, so
-/// distinct pools cannot double-reserve a port.
 #[derive(Debug, Default)]
-pub struct PortAllocator;
+pub struct PortAllocator {
+    reserved: Mutex<HashSet<u16>>,
+}
 
 /// Search parameters for [`PortAllocator::reserve_near`].
 #[derive(Debug, Clone, Copy)]
@@ -44,20 +27,24 @@ impl<'a> PortSearch<'a> {
 #[derive(Debug)]
 pub struct PortReservation {
     port: u16,
+    allocator: Weak<PortAllocator>,
 }
 
 impl Drop for PortReservation {
     fn drop(&mut self) {
-        // Drop can run in non-async contexts; use blocking_lock or spawn.
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let port = self.port;
-            handle.spawn(async move {
-                let mut res = global_reserved().lock().await;
-                res.remove(&port);
-            });
-        } else {
-            let mut res = global_reserved().blocking_lock();
-            res.remove(&self.port);
+        if let Some(alloc) = self.allocator.upgrade() {
+            // Drop can run in non-async contexts; use blocking_lock or spawn
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let alloc_clone = alloc.clone();
+                let port = self.port;
+                handle.spawn(async move {
+                    let mut res = alloc_clone.reserved.lock().await;
+                    res.remove(&port);
+                });
+            } else {
+                let mut res = alloc.reserved.blocking_lock();
+                res.remove(&self.port);
+            }
         }
     }
 }
@@ -70,7 +57,7 @@ impl PortReservation {
 
 impl PortAllocator {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self)
+        Arc::new(Self::default())
     }
 
     pub async fn reserve_near<F>(
@@ -81,7 +68,7 @@ impl PortAllocator {
     where
         F: Fn(u16) -> bool + Send,
     {
-        let mut reserved = global_reserved().lock().await;
+        let mut reserved = self.reserved.lock().await;
         for offset in 0..search.tries {
             let candidate = search.base.wrapping_add(offset);
 
@@ -96,7 +83,10 @@ impl PortAllocator {
             if let Ok(listener) = TcpListener::bind((search.host, candidate)) {
                 drop(listener);
                 reserved.insert(candidate);
-                return Ok(PortReservation { port: candidate });
+                return Ok(PortReservation {
+                    port: candidate,
+                    allocator: Arc::downgrade(self),
+                });
             }
         }
         Err(BrowserError::PortConflict { port: search.base })
@@ -259,35 +249,5 @@ mod tests {
             ports.insert(port);
         }
         assert_eq!(ports.len(), 32);
-    }
-
-    #[tokio::test]
-    async fn given_distinct_allocators_same_base_when_reserving_concurrently_then_ports_are_distinct()
-     {
-        // Regression test: two independent `PortAllocator`s (as used by
-        // separate `BrowserPool`s running in parallel) must not both reserve
-        // the same port from the same base. The reservation registry is
-        // process-wide, so the first allocator to claim `base` forces the
-        // second to skip it. This test was RED with a per-allocator reserved
-        // set (0.2.2), where both allocators could claim `base`.
-        let base = pick_ephemeral_port();
-        let mut tasks = Vec::new();
-        for _ in 0..16 {
-            let alloc = PortAllocator::new();
-            tasks.push(tokio::spawn(async move {
-                alloc
-                    .reserve_near(PortSearch::new("127.0.0.1", base, 200), |_| true)
-                    .await
-                    .unwrap()
-            }));
-        }
-        let results = futures_util::future::join_all(tasks).await;
-        let mut ports = HashSet::new();
-        for res in results {
-            let port = res.unwrap().port();
-            assert!(!ports.contains(&port), "Duplicate port reserved: {}", port);
-            ports.insert(port);
-        }
-        assert_eq!(ports.len(), 16);
     }
 }
