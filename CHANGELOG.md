@@ -5,10 +5,24 @@ All notable changes to `cdp-browser-lite` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-08-19
+
+### Fixed
+- Fixed port race condition on the `LaunchMode::Auto` path by making the `PortAllocator` a process-wide `OnceLock` singleton and holding `PortReservation` across the Chrome spawn.
+- Replaced non-compliant `#[allow(...)]` attributes with `#[expect(..., reason = "...")]` according to new repository conventions.
+- Translated the Spanish doc comment on `probe::is_chrome_cdp` to English.
+
+### Changed
+- Refined `BrowserPool` termination wording in documentation to indicate best-effort fallback on drop, promoting `close_all().await` as the deterministic path.
+
+### Tested
+- Added full integration test coverage for `PersistentPerPort` profiles and `BrowserPool` management.
+- Implemented `serve_singleton` mode in `fake_chrome_helper` to properly test Chrome's single-instance delegation behaviors.
+
 ## [0.2.0] - 2026-08-19
 
 ### Added
-- `BrowserPool` for managing multiple Chrome processes concurrently, with automatic port tracking and termination of managed instances upon drop.
+- `BrowserPool` for managing multiple Chrome processes concurrently, with automatic port tracking. Managed instances are terminated deterministically via `close_all().await`, with a best-effort fallback upon drop.
 - `PortAllocator` replaces the previous port search mechanism, using deterministic reservations to eliminate cross-process bind races.
 - `ProfileMode::PersistentPerPort` dynamically derives the profile directory from the resolved port, enabling multi-instance `LaunchMode::Auto`.
 - Added `Browser::profile_dir` async accessor to retrieve the resolved profile directory path.
