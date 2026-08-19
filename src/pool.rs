@@ -8,6 +8,11 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::ports::{PortAllocator, PortReservation, PortSearch};
 use crate::{Browser, BrowserConfig, BrowserError};
 
+/// How many times an ephemeral open retries with a fresh port after a direct
+/// (non-allocator) binder races the reserved port. Bounded to avoid spinning on
+/// genuine port exhaustion.
+const EPHEMERAL_OPEN_RETRIES: usize = 5;
+
 /// Identifier for a browser owned by a [`BrowserPool`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BrowserId(u64);
@@ -81,29 +86,54 @@ impl BrowserPool {
     ///
     /// The reservation lives until the entry is closed or the pool is dropped,
     /// preventing another `open` from picking the same port while Chrome binds.
-    pub async fn open(&self, mut config: BrowserConfig) -> Result<BrowserId, BrowserError> {
+    pub async fn open(&self, config: BrowserConfig) -> Result<BrowserId, BrowserError> {
         config.validate()?;
 
-        let reservation = if config.port == 0 {
-            Some(self.reserve_ephemeral_port().await?)
+        let id = if config.port == 0 {
+            self.open_ephemeral(config).await?
         } else {
             self.check_port_conflict(config.port).await?;
-            None
+            self.open_reserved_port(config).await?
         };
+        Ok(id)
+    }
 
-        if let Some(ref res) = reservation {
-            config.port = res.port();
+    /// Opens an ephemeral (`port == 0`) browser, retrying with a fresh
+    /// reservation on the (rare) race where a process that binds ports without
+    /// going through the allocator — e.g. a mock devtools server in tests —
+    /// grabs the reserved port between the allocator's probe and Chrome's bind.
+    /// The reservation registry is process-wide, so this only fires against
+    /// direct `bind(0)` callers, not against other pools.
+    async fn open_ephemeral(&self, config: BrowserConfig) -> Result<BrowserId, BrowserError> {
+        let mut last_error: Option<BrowserError> = None;
+        for _ in 0..=EPHEMERAL_OPEN_RETRIES {
+            let mut attempt = config.clone();
+            let reservation = self.reserve_ephemeral_port().await?;
+            attempt.port = reservation.port();
+
+            let browser =
+                match Browser::ensure_with_allocator(attempt, self.inner.allocator.clone()).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        drop(reservation);
+                        last_error = Some(e);
+                        // Retry with a fresh ephemeral reservation. A concurrent
+                        // direct binder may have won the race for the first port.
+                        continue;
+                    }
+                };
+
+            return self.register(browser, Some(reservation)).await;
         }
+        Err(last_error.unwrap_or(BrowserError::PortConflict { port: 0 }))
+    }
 
-        let browser =
-            match Browser::ensure_with_allocator(config, self.inner.allocator.clone()).await {
-                Ok(b) => b,
-                Err(e) => {
-                    drop(reservation);
-                    return Err(e);
-                }
-            };
-
+    /// Registers a freshly opened browser in the pool and returns its id.
+    async fn register(
+        &self,
+        browser: Browser,
+        reservation: Option<PortReservation>,
+    ) -> Result<BrowserId, BrowserError> {
         let id = BrowserId(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
         let (host, port) = browser.debug_address().await;
         let profile_dir = browser.profile_dir().await;
@@ -128,6 +158,12 @@ impl BrowserPool {
         browsers.insert(id, Arc::new(browser));
 
         Ok(id)
+    }
+
+    /// Opens a browser on an explicitly configured (non-zero) port.
+    async fn open_reserved_port(&self, config: BrowserConfig) -> Result<BrowserId, BrowserError> {
+        let browser = Browser::ensure_with_allocator(config, self.inner.allocator.clone()).await?;
+        self.register(browser, None).await
     }
 
     pub async fn get(&self, id: BrowserId) -> Option<Arc<Browser>> {
