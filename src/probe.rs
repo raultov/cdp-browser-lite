@@ -23,7 +23,7 @@ pub async fn is_chrome_cdp(host: &str, port: u16) -> bool {
         _ => return false,
     };
 
-    let req = b"GET /json/version HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    let req = b"GET /json/version HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
     if stream.write_all(req).await.is_err() {
         return false;
     }
