@@ -5,6 +5,22 @@ All notable changes to `cdp-browser-lite` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-08-19
+
+### Fixed
+- `probe::is_chrome_cdp` now sends its `/json/version` readiness probe over
+  **HTTP/1.1** instead of HTTP/1.0.  Chrome >= 151 silently drops HTTP/1.0
+  requests (returns an empty response), causing `is_chrome_cdp` to always
+  return `false` even for a healthy DevTools endpoint.  The fix restores
+  correct attach-detection on Chrome >= 151 (`LaunchMode::Auto` B2/B3 paths).
+
+### Tested
+- Added `MockBehavior::IgnoresHttp10` to `tests/support/mock_devtools.rs`:
+  the mock drops the connection with no response when it receives an HTTP/1.0
+  request, faithfully replicating Chrome 151 behaviour.
+- Added `given_chrome_ignores_http10_when_probing_then_true` regression test
+  in `tests/probe_tests.rs` (RED on 0.2.1, GREEN after the HTTP/1.1 fix).
+
 ## [0.2.1] - 2026-08-19
 
 ### Fixed
@@ -95,5 +111,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supported platform, plus an E2E job that installs Chrome and runs the
   ignored tests.
 
+[0.2.2]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.2.2
 [0.1.1]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.1.1
 [0.1.0]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.1.0
