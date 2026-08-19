@@ -14,7 +14,7 @@ pub struct Profile {
 
 impl Profile {
     #[doc(hidden)]
-    pub fn prepare(mode: &ProfileMode) -> Result<Profile, BrowserError> {
+    pub fn prepare(mode: &ProfileMode, port: u16) -> Result<Profile, BrowserError> {
         match mode {
             ProfileMode::Ephemeral => {
                 let temp = tempfile::Builder::new()
@@ -39,6 +39,17 @@ impl Profile {
                     dir: Some(dir.clone()),
                 })
             }
+            ProfileMode::PersistentPerPort { root, prefix } => {
+                let dir = root.join(format!("{}{}", prefix, port));
+                fs::create_dir_all(&dir).map_err(|e| {
+                    BrowserError::Profile(format!("failed to create profile dir: {e}"))
+                })?;
+                patch_preferences(&dir)?;
+                Ok(Profile {
+                    mode: mode.clone(),
+                    dir: Some(dir),
+                })
+            }
             ProfileMode::UserDefault => Ok(Profile {
                 mode: mode.clone(),
                 dir: None,
@@ -55,13 +66,6 @@ impl Profile {
         first_line.trim().parse().ok()
     }
 
-    pub(crate) fn singleton_lock_exists(&self) -> bool {
-        self.dir
-            .as_ref()
-            .map(|d| d.join("SingletonLock").exists())
-            .unwrap_or(false)
-    }
-
     pub(crate) fn remove_singleton_lock(&self) {
         if let Some(dir) = &self.dir {
             let path = dir.join("SingletonLock");
@@ -76,7 +80,9 @@ impl Profile {
                     let _ = fs::remove_dir_all(dir);
                     self.dir = None;
                 }
-                ProfileMode::Persistent(_) | ProfileMode::UserDefault => {
+                ProfileMode::Persistent(_)
+                | ProfileMode::PersistentPerPort { .. }
+                | ProfileMode::UserDefault => {
                     let lock = dir.join("SingletonLock");
                     let _ = fs::remove_file(lock);
                 }
@@ -114,8 +120,8 @@ mod tests {
 
     #[test]
     fn given_two_ephemeral_when_prepare_then_dirs_are_distinct() {
-        let p1 = Profile::prepare(&ProfileMode::Ephemeral).unwrap();
-        let p2 = Profile::prepare(&ProfileMode::Ephemeral).unwrap();
+        let p1 = Profile::prepare(&ProfileMode::Ephemeral, 0).unwrap();
+        let p2 = Profile::prepare(&ProfileMode::Ephemeral, 0).unwrap();
         let d1 = p1.dir.as_ref().unwrap();
         let d2 = p2.dir.as_ref().unwrap();
         assert_ne!(d1, d2, "ephemeral dirs must be distinct");
@@ -125,7 +131,7 @@ mod tests {
 
     #[test]
     fn given_ephemeral_with_files_when_cleanup_then_dir_removed() {
-        let mut profile = Profile::prepare(&ProfileMode::Ephemeral).unwrap();
+        let mut profile = Profile::prepare(&ProfileMode::Ephemeral, 0).unwrap();
         let dir = profile.dir.clone().unwrap();
         fs::write(dir.join("some_data"), "payload").unwrap();
         assert!(dir.exists());
@@ -149,7 +155,7 @@ mod tests {
         let original = r#"{"exit_type":"Crashed","other_setting":42,"nested":{"key":"val"}}"#;
         fs::write(&prefs, original).unwrap();
 
-        Profile::prepare(&ProfileMode::Persistent(dir.clone())).unwrap();
+        Profile::prepare(&ProfileMode::Persistent(dir.clone()), 0).unwrap();
 
         let content = fs::read_to_string(&prefs).unwrap();
         let json: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -167,7 +173,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
 
-        let profile = Profile::prepare(&ProfileMode::Persistent(dir.clone())).unwrap();
+        let profile = Profile::prepare(&ProfileMode::Persistent(dir.clone()), 0).unwrap();
 
         assert_eq!(profile.dir, Some(dir), "persistent dir must be stored");
     }
@@ -181,8 +187,11 @@ mod tests {
         let lock = dir.join("SingletonLock");
         fs::write(&lock, "").unwrap();
 
-        let mut profile = Profile::prepare(&ProfileMode::Persistent(dir.clone())).unwrap();
-        assert!(profile.singleton_lock_exists());
+        let mut profile = Profile::prepare(&ProfileMode::Persistent(dir.clone()), 0).unwrap();
+        assert!(
+            lock.exists(),
+            "SingletonLock must be present before cleanup"
+        );
 
         profile.cleanup();
 
@@ -221,24 +230,5 @@ mod tests {
         };
 
         assert_eq!(profile.read_devtools_active_port(), None);
-    }
-
-    #[test]
-    fn test_singleton_lock_exists() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().to_path_buf();
-        let lock = dir.join("SingletonLock");
-
-        let profile = Profile {
-            mode: ProfileMode::Ephemeral,
-            dir: Some(dir.clone()),
-        };
-        assert!(!profile.singleton_lock_exists());
-
-        fs::write(&lock, "").unwrap();
-        assert!(profile.singleton_lock_exists());
-
-        profile.remove_singleton_lock();
-        assert!(!profile.singleton_lock_exists());
     }
 }

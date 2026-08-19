@@ -319,7 +319,7 @@ mod tests {
     #[test]
     fn given_default_config_when_building_args_then_base_flags_and_user_data_dir() {
         let cfg = base_config();
-        let profile = Profile::prepare(&ProfileMode::Ephemeral).unwrap();
+        let profile = Profile::prepare(&ProfileMode::Ephemeral, 0).unwrap();
 
         let args = build_args(&cfg, &profile, 9222);
 
@@ -347,7 +347,7 @@ mod tests {
             .mode(LaunchMode::LaunchNew)
             .headless(true)
             .build();
-        let profile = Profile::prepare(&ProfileMode::Ephemeral).unwrap();
+        let profile = Profile::prepare(&ProfileMode::Ephemeral, 0).unwrap();
 
         let args = build_args(&cfg, &profile, 0);
 
@@ -361,7 +361,7 @@ mod tests {
     #[test]
     fn given_user_default_profile_when_building_args_then_user_data_dir_omitted() {
         let cfg = base_config();
-        let profile = Profile::prepare(&ProfileMode::UserDefault).unwrap();
+        let profile = Profile::prepare(&ProfileMode::UserDefault, 0).unwrap();
 
         let args = build_args(&cfg, &profile, 9222);
 
@@ -379,7 +379,7 @@ mod tests {
             .window_size(1280, 800)
             .user_agent("ua/1.0")
             .build();
-        let profile = Profile::prepare(&ProfileMode::Ephemeral).unwrap();
+        let profile = Profile::prepare(&ProfileMode::Ephemeral, 0).unwrap();
 
         let args = build_args(&cfg, &profile, 9222);
 
@@ -395,7 +395,7 @@ mod tests {
             .arg("--foo=1")
             .arg("--weird-flag with spaces")
             .build();
-        let profile = Profile::prepare(&ProfileMode::Ephemeral).unwrap();
+        let profile = Profile::prepare(&ProfileMode::Ephemeral, 0).unwrap();
 
         let args = build_args(&cfg, &profile, 9222);
 
@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn given_port_zero_when_building_args_then_remote_debugging_port_is_zero() {
         let cfg = base_config();
-        let profile = Profile::prepare(&ProfileMode::Ephemeral).unwrap();
+        let profile = Profile::prepare(&ProfileMode::Ephemeral, 0).unwrap();
 
         let args = build_args(&cfg, &profile, 0);
 
@@ -437,7 +437,7 @@ mod tests {
             .mode(LaunchMode::LaunchNew)
             .enable_automation(true)
             .build();
-        let profile = Profile::prepare(&ProfileMode::Ephemeral).unwrap();
+        let profile = Profile::prepare(&ProfileMode::Ephemeral, 0).unwrap();
 
         let args = build_args(&cfg, &profile, 9222);
 
@@ -450,7 +450,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
         let cfg = base_config();
-        let profile = Profile::prepare(&ProfileMode::Persistent(dir.clone())).unwrap();
+        let profile = Profile::prepare(&ProfileMode::Persistent(dir.clone()), 0).unwrap();
 
         let args = build_args(&cfg, &profile, 9222);
 
@@ -475,7 +475,7 @@ mod tests {
             .headless(false)
             .no_sandbox(false)
             .build();
-        let profile = Profile::prepare(&ProfileMode::Ephemeral).unwrap();
+        let profile = Profile::prepare(&ProfileMode::Ephemeral, 0).unwrap();
 
         let args = build_args(&cfg, &profile, 9222);
 
@@ -493,7 +493,7 @@ mod tests {
             .mode(LaunchMode::LaunchNew)
             .arg("--remote-debugging-port=55555")
             .build();
-        let profile = Profile::prepare(&ProfileMode::Ephemeral).unwrap();
+        let profile = Profile::prepare(&ProfileMode::Ephemeral, 0).unwrap();
 
         let args = build_args(&cfg, &profile, 9222);
 

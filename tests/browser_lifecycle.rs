@@ -76,10 +76,10 @@ async fn auto_attach_to_user_chrome_regression_issue_4() {
         .expect("Auto must attach to user Chrome");
 
     assert!(
-        !browser.is_managed(),
+        !browser.is_managed().await,
         "attached browser must not be managed"
     );
-    let (host, port) = browser.debug_address();
+    let (host, port) = browser.debug_address().await;
     assert_eq!(host, "127.0.0.1");
     assert_eq!(port, mock.port);
 }
@@ -97,8 +97,11 @@ async fn auto_launch_when_port_is_closed() {
         .await
         .expect("Auto must launch when port is closed");
 
-    assert!(browser.is_managed(), "launched browser must be managed");
-    let (host, actual_port) = browser.debug_address();
+    assert!(
+        browser.is_managed().await,
+        "launched browser must be managed"
+    );
+    let (host, actual_port) = browser.debug_address().await;
     assert_eq!(host, "127.0.0.1");
     assert_eq!(actual_port, port);
 }
@@ -118,8 +121,8 @@ async fn auto_with_port_occupied_by_non_chrome() {
         .await
         .expect("Auto must find free port when occupied by non-Chrome");
 
-    assert!(browser.is_managed());
-    let (_, actual_port) = browser.debug_address();
+    assert!(browser.is_managed().await);
+    let (_, actual_port) = browser.debug_address().await;
     assert_ne!(
         actual_port, occupied_port,
         "effective port must differ from occupied base"
@@ -163,8 +166,8 @@ async fn launch_new_ephemeral_port() {
         .await
         .expect("LaunchNew with ephemeral port must succeed");
 
-    assert!(browser.is_managed());
-    let (_, actual_port) = browser.debug_address();
+    assert!(browser.is_managed().await);
+    let (_, actual_port) = browser.debug_address().await;
     assert_ne!(actual_port, 0, "ephemeral port must resolve to non-zero");
 }
 
@@ -203,8 +206,8 @@ async fn attach_only_to_running_chrome() {
         .await
         .expect("AttachOnly must succeed for running Chrome");
 
-    assert!(!browser.is_managed());
-    let (_, port) = browser.debug_address();
+    assert!(!browser.is_managed().await);
+    let (_, port) = browser.debug_address().await;
     assert_eq!(port, mock.port);
 }
 
@@ -223,12 +226,12 @@ async fn stop_kills_process_and_cleans_profile() {
         .await
         .expect("ensure must succeed for managed browser");
 
-    assert!(browser.is_managed());
-    assert!(browser.is_alive());
+    assert!(browser.is_managed().await);
+    assert!(browser.is_alive().await);
 
     browser.stop().await.expect("stop must succeed");
 
-    assert!(!browser.is_alive());
+    assert!(!browser.is_alive().await);
 }
 
 #[tokio::test]
@@ -243,10 +246,10 @@ async fn stop_on_attached_does_nothing() {
 
     let browser = Browser::ensure(cfg).await.expect("Auto must attach");
 
-    assert!(!browser.is_managed());
+    assert!(!browser.is_managed().await);
     browser.stop().await.expect("stop on attached must be Ok");
 
-    assert!(!browser.is_alive(), "browser must be marked stopped");
+    assert!(!browser.is_alive().await, "browser must be marked stopped");
 }
 
 #[tokio::test]
@@ -260,16 +263,16 @@ async fn restart_produces_new_process() {
 
     let browser = Browser::ensure(cfg).await.expect("ensure must succeed");
 
-    assert!(browser.is_managed());
-    assert!(browser.is_alive());
+    assert!(browser.is_managed().await);
+    assert!(browser.is_alive().await);
 
-    let _old_port = browser.debug_address().1;
+    let _old_port = browser.debug_address().await.1;
 
     browser.restart().await.expect("restart must succeed");
 
-    assert!(browser.is_managed());
-    assert!(browser.is_alive());
-    let new_port = browser.debug_address().1;
+    assert!(browser.is_managed().await);
+    assert!(browser.is_alive().await);
+    let new_port = browser.debug_address().await.1;
     assert_eq!(new_port, port, "restart must reuse configured port");
     assert_ne!(new_port, 0);
 
@@ -299,15 +302,15 @@ fn e2e_ensure_stop_restart_with_real_chrome_headless() {
         let browser = Browser::ensure(cfg)
             .await
             .expect("real Chrome must launch headless");
-        assert!(browser.is_managed());
+        assert!(browser.is_managed().await);
 
-        let (_, actual_port) = browser.debug_address();
+        let (_, actual_port) = browser.debug_address().await;
         assert_eq!(actual_port, port);
 
-        assert!(browser.is_alive());
+        assert!(browser.is_alive().await);
 
         browser.stop().await.expect("stop must succeed");
-        assert!(!browser.is_alive());
+        assert!(!browser.is_alive().await);
         assert!(user_data_dir.exists());
 
         let browser2 = Browser::ensure(
@@ -322,9 +325,9 @@ fn e2e_ensure_stop_restart_with_real_chrome_headless() {
         .await
         .expect("restart must succeed");
 
-        assert!(browser2.is_managed());
-        assert!(browser2.is_alive());
-        let (_, p) = browser2.debug_address();
+        assert!(browser2.is_managed().await);
+        assert!(browser2.is_alive().await);
+        let (_, p) = browser2.debug_address().await;
         assert_eq!(p, port);
 
         browser2.stop().await.expect("final stop must succeed");

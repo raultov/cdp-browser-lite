@@ -40,7 +40,7 @@ async fn drop_kills_managed_process() {
         .build();
 
     let browser = Browser::ensure(cfg).await.expect("launch failed");
-    assert!(browser.is_managed());
+    assert!(browser.is_managed().await);
 
     // We cannot access PID easily since process is private, but we can verify
     // profile deletion as a proxy for drop execution.
@@ -71,9 +71,9 @@ async fn keep_alive_on_drop_respects_process() {
         .build();
 
     let browser = Browser::ensure(cfg).await.expect("launch failed");
-    assert!(browser.is_managed());
+    assert!(browser.is_managed().await);
 
-    let addr = browser.debug_address();
+    let addr = browser.debug_address().await;
     let host = addr.0.to_string();
     let port = addr.1;
 
@@ -100,7 +100,7 @@ async fn drop_attach_does_not_kill() {
         .build();
 
     let browser = Browser::ensure(cfg).await.expect("AttachOnly failed");
-    assert!(!browser.is_managed());
+    assert!(!browser.is_managed().await);
 
     drop(browser);
 

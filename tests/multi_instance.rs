@@ -35,7 +35,7 @@ async fn multi_instance_all_scenarios() {
 
     let mut ports = Vec::new();
     for b in &browsers {
-        let p = b.debug_address().1;
+        let p = b.debug_address().await.1;
         assert!(!ports.contains(&p), "Ports must be unique");
         ports.push(p);
     }

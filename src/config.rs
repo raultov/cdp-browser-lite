@@ -16,11 +16,14 @@ pub enum LaunchMode {
 
 /// Defines the type of profile to use for the browser.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProfileMode {
     /// Creates a temporary profile that is deleted when the browser is stopped.
     Ephemeral,
     /// Uses a persistent profile at the specified path.
     Persistent(PathBuf),
+    /// Profile directory derived from the resolved port: `root/{prefix}{port}`.
+    PersistentPerPort { root: PathBuf, prefix: String },
     /// Uses the default user profile.
     UserDefault,
 }
@@ -263,6 +266,28 @@ impl Default for BrowserConfigBuilder {
             auto_relaunch: false,
             no_sandbox: None,
         }
+    }
+}
+
+impl ProfileMode {
+    /// Pure. No filesystem side effects. `None` for `UserDefault`
+    /// (and for `Ephemeral`, whose directory does not exist until prepared).
+    pub fn dir_for_port(&self, port: u16) -> Option<PathBuf> {
+        match self {
+            ProfileMode::Ephemeral | ProfileMode::UserDefault => None,
+            ProfileMode::Persistent(dir) => Some(dir.clone()),
+            ProfileMode::PersistentPerPort { root, prefix } => {
+                Some(root.join(format!("{}{}", prefix, port)))
+            }
+        }
+    }
+
+    /// Pure. True if a *managed* instance appears to hold this port.
+    /// Always false for `Ephemeral` and `UserDefault`.
+    pub fn managed_lock_exists(&self, port: u16) -> bool {
+        self.dir_for_port(port)
+            .map(|d| d.join("SingletonLock").exists())
+            .unwrap_or(false)
     }
 }
 

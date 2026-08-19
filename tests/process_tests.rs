@@ -59,7 +59,7 @@ fn fake_env(mode: FakeMode, args_log: &Path) -> Vec<(String, String)> {
 async fn given_fake_chrome_serving_fixed_port_when_spawn_then_ok_and_effective_port_matches() {
     let port = pick_free_port();
     let user_data_dir = fresh_user_data_dir("serve-fixed");
-    let profile = Profile::prepare(&ProfileMode::Persistent(user_data_dir.clone())).unwrap();
+    let profile = Profile::prepare(&ProfileMode::Persistent(user_data_dir.clone()), port).unwrap();
     let log = user_data_dir.join("args.log");
 
     let config = BrowserConfig::builder()
@@ -100,7 +100,7 @@ async fn given_fake_chrome_serving_fixed_port_when_spawn_then_ok_and_effective_p
 #[tokio::test]
 async fn given_fake_chrome_serving_ephemeral_when_spawn_then_port_resolved_from_devtools_file() {
     let user_data_dir = fresh_user_data_dir("serve-ephemeral");
-    let profile = Profile::prepare(&ProfileMode::Persistent(user_data_dir.clone())).unwrap();
+    let profile = Profile::prepare(&ProfileMode::Persistent(user_data_dir.clone()), 0).unwrap();
     let log = user_data_dir.join("args.log");
 
     let config = BrowserConfig::builder()
@@ -144,7 +144,7 @@ async fn given_fake_chrome_serving_ephemeral_when_spawn_then_port_resolved_from_
 #[tokio::test]
 async fn given_fake_chrome_exit_immediately_when_spawn_then_early_exit() {
     let user_data_dir = fresh_user_data_dir("early-exit");
-    let profile = Profile::prepare(&ProfileMode::Persistent(user_data_dir.clone())).unwrap();
+    let profile = Profile::prepare(&ProfileMode::Persistent(user_data_dir.clone()), 0).unwrap();
     let log = user_data_dir.join("args.log");
 
     let config = launch_new_config_with_timeout(
@@ -173,7 +173,7 @@ async fn given_fake_chrome_exit_immediately_when_spawn_then_early_exit() {
 
 #[tokio::test]
 async fn given_user_default_with_early_exit_when_spawn_then_hint_mentions_existing_chrome() {
-    let profile = Profile::prepare(&ProfileMode::UserDefault).unwrap();
+    let profile = Profile::prepare(&ProfileMode::UserDefault, 0).unwrap();
     let log = tempfile::tempdir().unwrap().path().join("args.log");
 
     let config = launch_new_config_with_timeout(Duration::from_secs(5), ProfileMode::UserDefault);
@@ -202,7 +202,7 @@ async fn given_user_default_with_early_exit_when_spawn_then_hint_mentions_existi
 #[tokio::test]
 async fn given_fake_chrome_hang_no_port_when_spawn_then_startup_timeout() {
     let user_data_dir = fresh_user_data_dir("hang");
-    let profile = Profile::prepare(&ProfileMode::Persistent(user_data_dir.clone())).unwrap();
+    let profile = Profile::prepare(&ProfileMode::Persistent(user_data_dir.clone()), 0).unwrap();
     let log = user_data_dir.join("args.log");
 
     let config = BrowserConfig::builder()
@@ -244,7 +244,7 @@ async fn given_fake_chrome_hang_no_port_when_spawn_then_startup_timeout() {
 #[tokio::test]
 async fn given_invalid_chrome_path_when_spawn_then_spawn_failed_with_chrome_path_hint() {
     let user_data_dir = fresh_user_data_dir("invalid-path");
-    let profile = Profile::prepare(&ProfileMode::Persistent(user_data_dir.clone())).unwrap();
+    let profile = Profile::prepare(&ProfileMode::Persistent(user_data_dir.clone()), 0).unwrap();
 
     let bogus_path = user_data_dir.join("does_not_exist_chrome");
 
@@ -282,7 +282,7 @@ async fn given_invalid_chrome_path_when_spawn_then_spawn_failed_with_chrome_path
 async fn given_fake_chrome_serving_when_terminate_then_graceful_within_grace() {
     let port = pick_free_port();
     let user_data_dir = fresh_user_data_dir("term-graceful");
-    let profile = Profile::prepare(&ProfileMode::Persistent(user_data_dir.clone())).unwrap();
+    let profile = Profile::prepare(&ProfileMode::Persistent(user_data_dir.clone()), port).unwrap();
     let log = user_data_dir.join("args.log");
 
     let config = BrowserConfig::builder()
@@ -319,7 +319,7 @@ async fn given_fake_chrome_serving_when_terminate_then_graceful_within_grace() {
 async fn given_fake_chrome_ignore_sigterm_when_terminate_then_kill_after_grace() {
     let port = pick_free_port();
     let user_data_dir = fresh_user_data_dir("term-sigkill");
-    let profile = Profile::prepare(&ProfileMode::Persistent(user_data_dir.clone())).unwrap();
+    let profile = Profile::prepare(&ProfileMode::Persistent(user_data_dir.clone()), port).unwrap();
     let log = user_data_dir.join("args.log");
 
     let config = BrowserConfig::builder()
@@ -362,7 +362,7 @@ async fn given_fake_chrome_ignore_sigterm_when_terminate_then_kill_after_grace()
 #[tokio::test]
 async fn given_process_already_exited_when_terminate_then_ok_and_idempotent() {
     let user_data_dir = fresh_user_data_dir("term-already-dead");
-    let profile = Profile::prepare(&ProfileMode::Persistent(user_data_dir.clone())).unwrap();
+    let profile = Profile::prepare(&ProfileMode::Persistent(user_data_dir.clone()), 0).unwrap();
     let log = user_data_dir.join("args.log");
 
     let config = launch_new_config_with_timeout(

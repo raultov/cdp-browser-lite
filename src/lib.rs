@@ -25,7 +25,7 @@
 //!
 //!     // Launch the browser
 //!     let browser = Browser::ensure(config).await?;
-//!     let (host, port) = browser.debug_address();
+//!     let (host, port) = browser.debug_address().await;
 //!     println!("Chrome launched at {host}:{port}");
 //!
 //!     // Obtain a CDP client directly from the browser
@@ -41,6 +41,7 @@ pub mod browser;
 pub mod config;
 pub mod discovery;
 pub mod error;
+pub mod pool;
 pub mod ports;
 pub mod probe;
 pub mod process;
@@ -54,3 +55,5 @@ pub use cdp_lite::event_filter::EventFilter;
 pub use cdp_lite::protocol::{NoParams, WsCommand, WsResponse};
 pub use config::{BrowserConfig, LaunchMode, ProfileMode};
 pub use error::BrowserError;
+pub use pool::{BrowserEntry, BrowserId, BrowserPool};
+pub use ports::PortAllocator;

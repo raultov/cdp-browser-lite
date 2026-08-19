@@ -1,42 +1,102 @@
+use std::collections::HashSet;
 use std::net::TcpListener;
+use std::sync::{Arc, Weak};
+use tokio::sync::Mutex;
 
 use crate::error::BrowserError;
 
-/// Finds a free port in the range `[base, base + tries)`.
-///
-/// Kept for parity with the `find_new_port` method from chrome-debug-mcp; the
-/// `LaunchNew` mode prefers ephemeral ports (`port = 0`) and
-/// `find_free_port_near` is only used in `LaunchMode::Auto` when the fixed port
-/// is occupied by another managed instance.
-pub(crate) async fn find_free_port_near(
-    host: &str,
-    base: u16,
-    tries: u16,
-) -> Result<u16, BrowserError> {
-    let host_owned = host.to_string();
-    tokio::task::spawn_blocking(move || find_free_port_near_blocking(&host_owned, base, tries))
-        .await
-        .map_err(|e| {
-            BrowserError::Io(std::io::Error::other(format!(
-                "find_free_port_near task panicked: {e}"
-            )))
-        })?
+#[derive(Debug, Default)]
+pub struct PortAllocator {
+    reserved: Mutex<HashSet<u16>>,
 }
 
-fn find_free_port_near_blocking(host: &str, base: u16, tries: u16) -> Result<u16, BrowserError> {
-    for offset in 0..tries {
-        let candidate = base.wrapping_add(offset);
-        if let Ok(listener) = TcpListener::bind((host, candidate)) {
-            drop(listener);
-            return Ok(candidate);
+/// Search parameters for [`PortAllocator::reserve_near`].
+#[derive(Debug, Clone, Copy)]
+pub struct PortSearch<'a> {
+    pub host: &'a str,
+    pub base: u16,
+    pub tries: u16,
+}
+
+impl<'a> PortSearch<'a> {
+    pub fn new(host: &'a str, base: u16, tries: u16) -> Self {
+        Self { host, base, tries }
+    }
+}
+
+#[derive(Debug)]
+pub struct PortReservation {
+    port: u16,
+    allocator: Weak<PortAllocator>,
+}
+
+impl Drop for PortReservation {
+    fn drop(&mut self) {
+        if let Some(alloc) = self.allocator.upgrade() {
+            // Drop can run in non-async contexts; use blocking_lock or spawn
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let alloc_clone = alloc.clone();
+                let port = self.port;
+                handle.spawn(async move {
+                    let mut res = alloc_clone.reserved.lock().await;
+                    res.remove(&port);
+                });
+            } else {
+                let mut res = alloc.reserved.blocking_lock();
+                res.remove(&self.port);
+            }
         }
     }
-    Err(BrowserError::PortConflict { port: base })
+}
+
+impl PortReservation {
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+impl PortAllocator {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    pub async fn reserve_near<F>(
+        self: &Arc<Self>,
+        search: PortSearch<'_>,
+        is_acceptable: F,
+    ) -> Result<PortReservation, BrowserError>
+    where
+        F: Fn(u16) -> bool + Send,
+    {
+        let mut reserved = self.reserved.lock().await;
+        for offset in 0..search.tries {
+            let candidate = search.base.wrapping_add(offset);
+
+            if reserved.contains(&candidate) {
+                continue;
+            }
+
+            if !is_acceptable(candidate) {
+                continue;
+            }
+
+            if let Ok(listener) = TcpListener::bind((search.host, candidate)) {
+                drop(listener);
+                reserved.insert(candidate);
+                return Ok(PortReservation {
+                    port: candidate,
+                    allocator: Arc::downgrade(self),
+                });
+            }
+        }
+        Err(BrowserError::PortConflict { port: search.base })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn pick_ephemeral_port() -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -45,22 +105,13 @@ mod tests {
         port
     }
 
-    /// Reserves a contiguous run of `count` ports and returns the base plus the
-    /// listeners holding them. Retries until it actually finds a free contiguous
-    /// block, so the test never assumes `base+1`, `base+2`, ... happen to be free
-    /// on the runner (the source of the earlier macOS flake) and never overflows
-    /// `u16`.
-    ///
-    /// Unix-only: it relies on POSIX `bind` exclusivity (a second bind to a held
-    /// port fails). Windows loopback does not reliably enforce that in-process,
-    /// so the occupancy-based tests below are gated to `cfg(unix)`.
     #[cfg(unix)]
     fn reserve_contiguous(count: u16) -> (u16, Vec<TcpListener>) {
         for _ in 0..100 {
             let first = TcpListener::bind("127.0.0.1:0").unwrap();
             let base = first.local_addr().unwrap().port();
             if base.checked_add(count).is_none() {
-                continue; // too close to u16::MAX for the range; try another base
+                continue;
             }
             let mut held = vec![first];
             for offset in 1..count {
@@ -76,64 +127,127 @@ mod tests {
         panic!("could not reserve {count} contiguous free ports after 100 attempts");
     }
 
-    // Relies on POSIX bind semantics (freed ephemeral port is immediately
-    // rebindable to the exact same number); Windows loopback does not guarantee
-    // this, so keep it Unix-only.
-    #[cfg(unix)]
     #[tokio::test]
-    async fn given_base_free_when_searching_then_returns_base() {
+    async fn given_free_base_when_reserving_then_returns_base() {
+        let alloc = PortAllocator::new();
         let base = pick_ephemeral_port();
-        let result = find_free_port_near("127.0.0.1", base, 5)
+        let res = alloc
+            .reserve_near(PortSearch::new("127.0.0.1", base, 5), |_| true)
             .await
-            .expect("base should be free");
-        assert_eq!(result, base);
+            .unwrap();
+        assert_eq!(res.port(), base);
+    }
+
+    #[tokio::test]
+    async fn given_reserved_port_when_reserving_again_then_skips_it() {
+        let alloc = PortAllocator::new();
+        let base = pick_ephemeral_port();
+        let res1 = alloc
+            .reserve_near(PortSearch::new("127.0.0.1", base, 5), |_| true)
+            .await
+            .unwrap();
+        let res2 = alloc
+            .reserve_near(PortSearch::new("127.0.0.1", base, 5), |_| true)
+            .await
+            .unwrap();
+        assert_eq!(res1.port(), base);
+        assert_eq!(res2.port(), base + 1);
+    }
+
+    #[tokio::test]
+    async fn given_reservation_dropped_when_reserving_then_port_is_reusable() {
+        let alloc = PortAllocator::new();
+        let base = pick_ephemeral_port();
+        {
+            let _res1 = alloc
+                .reserve_near(PortSearch::new("127.0.0.1", base, 5), |_| true)
+                .await
+                .unwrap();
+        }
+        // Yield to allow Drop task to run
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let res2 = alloc
+            .reserve_near(PortSearch::new("127.0.0.1", base, 5), |_| true)
+            .await
+            .unwrap();
+        assert_eq!(res2.port(), base);
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn given_base_occupied_when_searching_then_returns_next_free() {
-        // Reserve base..base+10 contiguously, then free everything from offset 3
-        // onward: base..base+3 stay occupied, base+3..base+10 are free.
-        let (base, mut held) = reserve_contiguous(10);
-        held.truncate(3);
-
-        let result = find_free_port_near("127.0.0.1", base, 10)
+    async fn given_occupied_port_when_reserving_then_skips_it() {
+        let alloc = PortAllocator::new();
+        let (base, mut held) = reserve_contiguous(3);
+        held.truncate(1); // Keep `base` occupied
+        let res = alloc
+            .reserve_near(PortSearch::new("127.0.0.1", base, 5), |_| true)
             .await
-            .expect("a port in range should be free");
+            .unwrap();
+        assert_eq!(res.port(), base + 1);
+    }
 
-        assert!(
-            result >= base + 3,
-            "must skip occupied base..base+2, got {result} (base={base})"
-        );
-        assert!(
-            result < base + 10,
-            "must not exceed the search range, got {result} (base={base}, tries=10)"
-        );
-        assert_ne!(result, base, "must not return the occupied base");
+    #[tokio::test]
+    async fn given_predicate_rejecting_port_when_reserving_then_skips_it() {
+        let alloc = PortAllocator::new();
+        let base = pick_ephemeral_port();
+        let res = alloc
+            .reserve_near(PortSearch::new("127.0.0.1", base, 5), |p| p != base)
+            .await
+            .unwrap();
+        assert_eq!(res.port(), base + 1);
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn given_no_free_port_in_range_when_searching_then_port_conflict() {
-        // Keep the whole base..base+10 range occupied so the search must fail.
-        let (base, _occupy) = reserve_contiguous(10);
-
-        let result = find_free_port_near("127.0.0.1", base, 10).await;
-        match result {
-            Err(BrowserError::PortConflict { port }) => {
-                assert_eq!(port, base, "PortConflict must carry the requested base");
-            }
-            other => panic!("expected PortConflict, got {other:?}"),
+    async fn given_no_acceptable_port_in_range_when_reserving_then_port_conflict() {
+        let alloc = PortAllocator::new();
+        let (base, _held) = reserve_contiguous(2);
+        let err = alloc
+            .reserve_near(PortSearch::new("127.0.0.1", base, 2), |_| true)
+            .await
+            .unwrap_err();
+        match err {
+            BrowserError::PortConflict { port } => assert_eq!(port, base),
+            _ => panic!("Expected PortConflict"),
         }
     }
 
     #[tokio::test]
-    async fn given_tries_zero_when_searching_then_port_conflict() {
+    async fn given_tries_zero_when_reserving_then_port_conflict() {
+        let alloc = PortAllocator::new();
         let base = pick_ephemeral_port();
-        let result = find_free_port_near("127.0.0.1", base, 0).await;
-        assert!(
-            matches!(result, Err(BrowserError::PortConflict { port }) if port == base),
-            "tries=0 must yield PortConflict immediately, got {result:?}"
-        );
+        let err = alloc
+            .reserve_near(PortSearch::new("127.0.0.1", base, 0), |_| true)
+            .await
+            .unwrap_err();
+        match err {
+            BrowserError::PortConflict { port } => assert_eq!(port, base),
+            _ => panic!("Expected PortConflict"),
+        }
+    }
+
+    #[tokio::test]
+    async fn given_many_concurrent_reservations_when_awaited_then_all_ports_are_distinct() {
+        let alloc = PortAllocator::new();
+        let base = pick_ephemeral_port();
+        let mut tasks = Vec::new();
+        for _ in 0..32 {
+            let alloc_clone = alloc.clone();
+            tasks.push(tokio::spawn(async move {
+                alloc_clone
+                    .reserve_near(PortSearch::new("127.0.0.1", base, 100), |_| true)
+                    .await
+                    .unwrap()
+            }));
+        }
+        let results = futures_util::future::join_all(tasks).await;
+        let mut ports = HashSet::new();
+        for res in results {
+            let port = res.unwrap().port();
+            assert!(!ports.contains(&port), "Duplicate port reserved: {}", port);
+            ports.insert(port);
+        }
+        assert_eq!(ports.len(), 32);
     }
 }

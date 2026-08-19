@@ -16,7 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Launching Chrome...");
     let browser = Browser::ensure(config).await?;
-    let (host, port) = browser.debug_address();
+    let (host, port) = browser.debug_address().await;
     info!(%host, port, "Chrome launched");
 
     let client = browser.client().await?;

@@ -53,8 +53,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     info!("Launching managed headless Chrome...");
     let browser = Browser::ensure(config).await?;
-    let (host, port) = browser.debug_address();
-    info!(%host, port, managed = browser.is_managed(), "Chrome is up");
+    let (host, port) = browser.debug_address().await;
+    info!(%host, port, managed = browser.is_managed().await, "Chrome is up");
 
     // The client is cached and reused by the browser on subsequent calls.
     let client = browser.client().await?;
@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // 7. Clean shutdown: terminates the process and removes the ephemeral profile.
     info!("Stopping browser...");
     browser.stop().await?;
-    info!(alive = browser.is_alive(), "Browser stopped");
+    info!(alive = browser.is_alive().await, "Browser stopped");
 
     Ok(())
 }

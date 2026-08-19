@@ -9,7 +9,7 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::config::{BrowserConfig, LaunchMode};
 use crate::discovery;
 use crate::error::BrowserError;
-use crate::ports;
+use crate::ports::PortSearch;
 use crate::probe;
 use crate::process::{ChromeProcess, SpawnSpec, spawn};
 use crate::profile::Profile;
@@ -70,6 +70,11 @@ impl BrowserState {
     }
 }
 
+enum AutoDecision {
+    AttachAt(u16),
+    LaunchAt(u16),
+}
+
 impl Browser {
     /// Ensures a browser is available based on the provided configuration.
     /// Depending on `LaunchMode`, it will attach, launch a new instance, or try both.
@@ -106,35 +111,60 @@ impl Browser {
         }
     }
 
-    async fn ensure_auto(mut config: BrowserConfig) -> Result<Browser, BrowserError> {
+    async fn decide_auto(
+        config: &BrowserConfig,
+        allocator: &std::sync::Arc<crate::ports::PortAllocator>,
+    ) -> Result<AutoDecision, BrowserError> {
         if !probe::is_port_open(&config.host, config.port, PROBE_TIMEOUT).await {
-            return Self::spawn_managed(config).await;
+            return Ok(AutoDecision::LaunchAt(config.port));
         }
 
         if !probe::is_chrome_cdp(&config.host, config.port).await {
-            let port =
-                ports::find_free_port_near(&config.host, config.port, PORT_SEARCH_TRIES).await?;
-            config.port = port;
-            return Self::spawn_managed(config).await;
+            let res = allocator
+                .reserve_near(
+                    PortSearch::new(&config.host, config.port, PORT_SEARCH_TRIES),
+                    |_| true,
+                )
+                .await?;
+            return Ok(AutoDecision::LaunchAt(res.port()));
         }
 
-        let profile = Profile::prepare(&config.profile)?;
-        if profile.singleton_lock_exists() {
-            let port =
-                ports::find_free_port_near(&config.host, config.port, PORT_SEARCH_TRIES).await?;
-            config.port = port;
-            Self::spawn_managed_with_profile(config, profile).await
-        } else {
-            let port = config.port;
-            Ok(Browser {
-                config,
-                state: Arc::new(TokioMutex::new(BrowserState::new(None, None, port, false))),
-            })
+        if config.profile.managed_lock_exists(config.port) {
+            let p_mode = config.profile.clone();
+            let res = allocator
+                .reserve_near(
+                    PortSearch::new(&config.host, config.port, PORT_SEARCH_TRIES),
+                    move |p| !p_mode.managed_lock_exists(p),
+                )
+                .await?;
+            return Ok(AutoDecision::LaunchAt(res.port()));
+        }
+
+        Ok(AutoDecision::AttachAt(config.port))
+    }
+
+    async fn ensure_auto(config: BrowserConfig) -> Result<Browser, BrowserError> {
+        let allocator = crate::ports::PortAllocator::new();
+        let decision = Self::decide_auto(&config, &allocator).await?;
+        match decision {
+            AutoDecision::AttachAt(port) => {
+                let mut cfg = config;
+                cfg.port = port;
+                Ok(Browser {
+                    config: cfg,
+                    state: Arc::new(TokioMutex::new(BrowserState::new(None, None, port, false))),
+                })
+            }
+            AutoDecision::LaunchAt(port) => {
+                let mut cfg = config;
+                cfg.port = port;
+                Self::spawn_managed(cfg).await
+            }
         }
     }
 
     async fn spawn_managed(config: BrowserConfig) -> Result<Browser, BrowserError> {
-        let profile = Profile::prepare(&config.profile)?;
+        let profile = Profile::prepare(&config.profile, config.port)?;
         Self::spawn_managed_with_profile(config, profile).await
     }
 
@@ -322,16 +352,13 @@ impl Browser {
     }
 
     /// Returns true if this browser was launched (and is managed) by us.
-    pub fn is_managed(&self) -> bool {
-        self.state.try_lock().map(|s| s.managed).unwrap_or(false)
+    pub async fn is_managed(&self) -> bool {
+        self.state.lock().await.managed
     }
 
     /// Returns true if the browser is alive (running and not stopped).
-    pub fn is_alive(&self) -> bool {
-        let mut state = match self.state.try_lock() {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
+    pub async fn is_alive(&self) -> bool {
+        let mut state = self.state.lock().await;
 
         if state.stopped {
             return false;
@@ -348,19 +375,19 @@ impl Browser {
     }
 
     /// Returns the remote debugging host and port this browser is listening on.
-    pub fn debug_address(&self) -> (&str, u16) {
-        // Config reference lives in `self`, so &str is valid.
-        let port = self
-            .state
-            .try_lock()
-            .map(|s| s.actual_port)
-            .unwrap_or(self.config.port);
-        (&self.config.host, port)
+    pub async fn debug_address(&self) -> (String, u16) {
+        let port = self.state.lock().await.actual_port;
+        (self.config.host.clone(), port)
+    }
+
+    pub async fn profile_dir(&self) -> Option<std::path::PathBuf> {
+        let state = self.state.lock().await;
+        state.profile.as_ref().and_then(|p| p.dir.clone())
     }
 
     #[doc(hidden)]
-    pub fn pid(&self) -> Option<u32> {
-        let mut state = self.state.try_lock().ok()?;
+    pub async fn pid(&self) -> Option<u32> {
+        let mut state = self.state.lock().await;
         state.process.as_mut().map(|p| p.id())
     }
 
@@ -394,7 +421,6 @@ impl Drop for Browser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ProfileMode;
 
     fn make_attach_only_config(port: u16) -> BrowserConfig {
         BrowserConfig::builder()
@@ -419,26 +445,26 @@ mod tests {
             .build()
     }
 
-    #[test]
-    fn given_managed_browser_when_is_managed_then_true() {
+    #[tokio::test]
+    async fn given_managed_browser_when_is_managed_then_true() {
         let browser = Browser {
             config: make_launch_new_config(9222),
             state: Arc::new(TokioMutex::new(BrowserState::new(None, None, 9222, true))),
         };
-        assert!(browser.is_managed());
+        assert!(browser.is_managed().await);
     }
 
-    #[test]
-    fn given_attached_browser_when_is_managed_then_false() {
+    #[tokio::test]
+    async fn given_attached_browser_when_is_managed_then_false() {
         let browser = Browser {
             config: make_attach_only_config(9222),
             state: Arc::new(TokioMutex::new(BrowserState::new(None, None, 9222, false))),
         };
-        assert!(!browser.is_managed());
+        assert!(!browser.is_managed().await);
     }
 
-    #[test]
-    fn given_stopped_browser_when_is_alive_then_false() {
+    #[tokio::test]
+    async fn given_stopped_browser_when_is_alive_then_false() {
         let browser = Browser {
             config: make_launch_new_config(9222),
             state: Arc::new(TokioMutex::new({
@@ -447,29 +473,29 @@ mod tests {
                 s
             })),
         };
-        assert!(!browser.is_alive());
+        assert!(!browser.is_alive().await);
     }
 
-    #[test]
-    fn given_attached_not_stopped_when_is_alive_then_true() {
+    #[tokio::test]
+    async fn given_attached_not_stopped_when_is_alive_then_true() {
         let browser = Browser {
             config: make_attach_only_config(9222),
             state: Arc::new(TokioMutex::new(BrowserState::new(None, None, 9222, false))),
         };
-        assert!(browser.is_alive());
+        assert!(browser.is_alive().await);
     }
 
-    #[test]
-    fn given_managed_no_process_when_is_alive_then_false() {
+    #[tokio::test]
+    async fn given_managed_no_process_when_is_alive_then_false() {
         let browser = Browser {
             config: make_launch_new_config(9222),
             state: Arc::new(TokioMutex::new(BrowserState::new(None, None, 9222, true))),
         };
-        assert!(!browser.is_alive());
+        assert!(!browser.is_alive().await);
     }
 
-    #[test]
-    fn given_browser_when_debug_address_then_returns_host_and_actual_port() {
+    #[tokio::test]
+    async fn given_browser_when_debug_address_then_returns_host_and_actual_port() {
         let browser = Browser {
             config: BrowserConfig::builder()
                 .mode(LaunchMode::LaunchNew)
@@ -479,7 +505,7 @@ mod tests {
                 .build(),
             state: Arc::new(TokioMutex::new(BrowserState::new(None, None, 37251, true))),
         };
-        let (host, port) = browser.debug_address();
+        let (host, port) = browser.debug_address().await;
         assert_eq!(host, "127.0.0.1");
         assert_eq!(port, 37251);
     }
@@ -559,31 +585,5 @@ mod tests {
                 .await
                 .expect("stop on already-stopped browser must be Ok");
         });
-    }
-
-    #[test]
-    fn given_ephemeral_profile_when_singleton_lock_check_then_false() {
-        let profile =
-            Profile::prepare(&ProfileMode::Ephemeral).expect("ephemeral profile must succeed");
-        assert!(!profile.singleton_lock_exists());
-    }
-
-    #[test]
-    fn given_persistent_profile_no_lock_when_check_then_false() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().to_path_buf();
-        let profile = Profile::prepare(&ProfileMode::Persistent(dir))
-            .expect("persistent profile must succeed");
-        assert!(!profile.singleton_lock_exists());
-    }
-
-    #[test]
-    fn given_persistent_profile_with_lock_when_check_then_true() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().to_path_buf();
-        std::fs::write(dir.join("SingletonLock"), "").unwrap();
-        let profile = Profile::prepare(&ProfileMode::Persistent(dir))
-            .expect("persistent profile must succeed");
-        assert!(profile.singleton_lock_exists());
     }
 }
