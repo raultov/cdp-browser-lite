@@ -44,7 +44,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Profile Modes
 - `Ephemeral`: Creates a temporary profile that is cleaned up when dropped.
 - `Persistent`: Uses a persistent directory.
+- `PersistentPerPort`: Derives the profile directory from the resolved port (`root/{prefix}{port}`),
+  enabling independent multi-instance `LaunchMode::Auto` scenarios.
 - `UserDefault`: Omits the profile flag, using the system's default Chrome profile.
+
+## Chrome >= 151 compatibility
+
+Chrome >= 151 writes `SingletonLock` as a **dangling symlink** (the symlink target is never
+created). `cdp-browser-lite` >= 0.2.3 detects this correctly using `symlink_metadata` so
+that `LaunchMode::Auto` / `ProfileMode::PersistentPerPort` can distinguish a live managed
+instance from an unoccupied port on Chrome >= 151.
 
 ## Troubleshooting
 - **CHROME_PATH**: Set `CHROME_PATH` to specify a custom Chrome executable location.
