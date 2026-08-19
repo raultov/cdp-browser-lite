@@ -5,6 +5,19 @@ All notable changes to `cdp-browser-lite` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-08-19
+
+### Fixed
+- Reverted the `PortAllocator` reservation set to **per-instance** (undoing the 0.2.3
+  process-wide change).  The shared registry made the `ports` unit tests collide under
+  parallel execution on macOS/Windows — `pick_ephemeral_port()` hands out nearly-contiguous
+  bases there (e.g. 49180–49187), and with one global reservation set concurrent tests could
+  exhaust each other's small search ranges, failing with `PortConflict`.  Per-instance sets
+  restore the original, platform-proven test behaviour.
+- The `BrowserPool` ephemeral-open retry introduced in 0.2.3 is **retained**: a bounded
+  retry with a fresh reservation absorbs the residual port race (cross-pool double-reservation
+  and direct `bind(0)` binders) without a shared registry.  Pool flakiness remains resolved.
+
 ## [0.2.3] - 2026-08-19
 
 ### Fixed
@@ -16,18 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cause of the B3 failure in `chrome-debug-mcp`.  `symlink_metadata` does not follow the
   symlink, so it returns `true` for both plain files (fake Chrome / Chrome < 151) and
   dangling symlinks (Chrome >= 151).
-- `PortAllocator` now keeps its reservation set **process-wide** instead of per-instance,
-  so two independent allocators (e.g. several `BrowserPool`s running in parallel) cannot
-  double-reserve the same port.  Previously the bind-probe-then-drop step in
-  `reserve_near` could hand the same just-released ephemeral port to a second allocator,
-  causing intermittent `PortConflict` failures (a `LaunchMode::Auto`/`BrowserPool` flake on
-  0.2.2).  The probe-reserve step is also serialised under the shared lock, closing that
-  TOCTOU window within the process.
 - `BrowserPool::open` with an ephemeral (`port == 0`) config now retries with a fresh
-  reservation (bounded, `EPHEMERAL_OPEN_RETRIES = 5`) if a process that binds ports without
-  going through the allocator — e.g. a mock devtools server — wins the race for the reserved
-  port between the probe and Chrome's bind.  Fixed-port opens still fail fast with
-  `PortConflict` as before.
+  reservation (bounded, `EPHEMERAL_OPEN_RETRIES = 5`) when the reserved port is lost to a
+  concurrent binder between the allocator's probe and Chrome's bind.  This absorbs both the
+  cross-pool double-reservation and the direct `bind(0)` race that caused intermittent
+  `PortConflict` failures (a `LaunchMode::Auto`/`BrowserPool` flake on 0.2.2).  Fixed-port
+  opens still fail fast with `PortConflict` as before.
+- **Reverted in 0.2.4:** 0.2.3 briefly made the `PortAllocator` reservation set process-wide;
+  that caused the `ports` unit tests to collide under parallel execution on macOS/Windows
+  (they pick contiguous ephemeral bases), so it was reverted to per-instance sets.
 
 ### Tested
 - Added `serve_singleton_symlink` mode to `src/bin/fake_chrome_helper.rs`: creates
@@ -38,9 +48,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `given_symlink_lock_when_managed_lock_exists_then_true` (RED on 0.2.2, green after fix)
   - `given_plain_file_lock_when_managed_lock_exists_then_true` (regression guard)
   - `given_no_lock_when_managed_lock_exists_then_false`
-- Added `given_distinct_allocators_same_base_when_reserving_concurrently_then_ports_are_distinct`
-  regression test in `src/ports.rs` (RED with the per-allocator reservation set, green with the
-  process-wide set).
 - Added three integration tests in `tests/profile_per_port.rs` mirroring the B3 scenarios
   with `ServeSingletonSymlink`: different port, different profile dir, lock preserved.
 - Added `given_real_chrome_on_configured_port_when_second_manager_ensures_then_uses_different_port_and_profile`
@@ -156,6 +163,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supported platform, plus an E2E job that installs Chrome and runs the
   ignored tests.
 
+[0.2.4]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.2.4
 [0.2.3]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.2.3
 [0.2.2]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.2.2
 [0.1.1]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.1.1

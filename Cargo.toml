@@ -1,6 +1,6 @@
 [package]
 name = "cdp-browser-lite"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 description = "Control total del ciclo de vida de instancias de Chrome y acceso CDP"
 repository = "https://github.com/raultov/cdp-browser-lite"
