@@ -194,7 +194,10 @@ async fn given_persistent_per_port_when_preparing_then_dir_matches_root_prefix_p
     );
 
     // Since prepare tries to create the directory, we actually need a valid path or it will error.
-    #[expect(deprecated, reason = "TempDir::keep returns a Result requiring error handling")]
+    #[expect(
+        deprecated,
+        reason = "TempDir::keep returns a Result requiring error handling"
+    )]
     let real_root = tempfile::Builder::new().tempdir().unwrap().into_path();
     let p2 = cdp_browser_lite::profile::Profile::prepare(
         &ProfileMode::PersistentPerPort {
