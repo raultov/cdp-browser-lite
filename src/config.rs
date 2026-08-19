@@ -32,7 +32,10 @@ pub enum ProfileMode {
 #[derive(Debug, Clone)]
 // Independent launch flags; grouping them into a sub-struct would only obscure
 // the flat, self-documenting configuration surface.
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Flat configuration surface is intentional"
+)]
 pub struct BrowserConfig {
     pub(crate) mode: LaunchMode,
     pub(crate) host: String,
@@ -106,7 +109,10 @@ impl BrowserConfig {
 
 #[derive(Debug, Clone)]
 // Mirrors `BrowserConfig`'s independent launch flags (see note above).
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Flat configuration surface is intentional"
+)]
 pub struct BrowserConfigBuilder {
     mode: LaunchMode,
     host: String,
@@ -311,7 +317,10 @@ mod tests {
     // Linear field-by-field assertions on the builder defaults; `BrowserConfig`
     // deliberately does not derive `PartialEq`, so a single `assert_eq!` is not
     // an option and the assertion count exceeds the (lowered) complexity budget.
-    #[allow(clippy::cognitive_complexity)]
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "Linear field-by-field assertions for defaults"
+    )]
     fn given_default_builder_when_built_then_defaults_are_correct() {
         let cfg = BrowserConfig::builder().build();
         assert_eq!(cfg.mode, LaunchMode::Auto);

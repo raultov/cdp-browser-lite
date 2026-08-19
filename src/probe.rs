@@ -12,7 +12,7 @@ pub async fn is_port_open(host: &str, port: u16, timeout_duration: Duration) -> 
     )
 }
 
-/// Probe HTTP a /json/version tolerante a keep-alive (Chrome >= 148).
+/// Probe HTTP /json/version endpoint with keep-alive tolerance (Chrome >= 148).
 pub async fn is_chrome_cdp(host: &str, port: u16) -> bool {
     let addr = format!("{}:{}", host, port);
     let connect_timeout = Duration::from_millis(500);

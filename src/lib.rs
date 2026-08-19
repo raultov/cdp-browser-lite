@@ -1,4 +1,7 @@
-#![allow(missing_docs)]
+#![expect(
+    missing_docs,
+    reason = "Internal library surface is partially undocumented"
+)]
 
 //! # cdp-browser-lite
 //!
