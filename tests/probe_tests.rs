@@ -46,3 +46,14 @@ async fn given_ipv6_localhost_when_probing_then_no_panic() {
     let _ = is_chrome_cdp("::1", 12345).await;
     let _ = is_port_open("::1", 12345, Duration::from_millis(50)).await;
 }
+
+/// Regression test for Chrome >= 151 HTTP/1.0 incompatibility (fixed in 0.2.2).
+///
+/// The mock drops the connection with no response when it receives HTTP/1.0,
+/// mirroring real Chrome 151 behaviour.  The probe must still return `true`
+/// because it now sends HTTP/1.1.
+#[tokio::test]
+async fn given_chrome_ignores_http10_when_probing_then_true() {
+    let mock = MockChrome::start(MockBehavior::IgnoresHttp10).await;
+    assert!(is_chrome_cdp("127.0.0.1", mock.port).await);
+}

@@ -17,6 +17,9 @@ pub enum MockBehavior {
     KeepAliveThenCloseAfter(Duration),
     SilentPeer,
     NotChrome,
+    /// Mimics Chrome >= 151: silently closes the connection when the request
+    /// line uses HTTP/1.0, and replies normally for HTTP/1.1.
+    IgnoresHttp10,
 }
 
 pub struct MockChrome {
@@ -65,6 +68,18 @@ impl MockChrome {
                                         let mut buf = [0u8; 1024];
                                         let _ = stream.read(&mut buf).await;
                                         let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 17\r\n\r\n{\"Server\":\"Nginx\"}";
+                                        let _ = stream.write_all(resp).await;
+                                    }
+                                    MockBehavior::IgnoresHttp10 => {
+                                        let mut buf = [0u8; 1024];
+                                        let n = stream.read(&mut buf).await.unwrap_or(0);
+                                        let request = String::from_utf8_lossy(&buf[..n]);
+                                        // Drop the connection with no response when the client
+                                        // uses HTTP/1.0, replicating Chrome >= 151 behaviour.
+                                        if request.contains("HTTP/1.0") {
+                                            return;
+                                        }
+                                        let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n{\"Browser\":\"Chrome\"}";
                                         let _ = stream.write_all(resp).await;
                                     }
                                 }
