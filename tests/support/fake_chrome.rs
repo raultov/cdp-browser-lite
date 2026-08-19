@@ -17,8 +17,11 @@ use tokio::process::Command;
 pub enum FakeMode {
     /// Binds the requested port, writes `DevToolsActivePort`, accepts connections.
     Serve,
-    /// Binds like Serve, but exits if SingletonLock exists and cleans it up on SIGTERM.
+    /// Binds like Serve, but exits if SingletonLock exists (plain file) and cleans it up on SIGTERM.
     ServeSingleton,
+    /// Like `ServeSingleton`, but creates `SingletonLock` as a **dangling symlink**
+    /// (target never exists), mimicking real Chrome >= 151 behaviour.
+    ServeSingletonSymlink,
     /// Exits with code 1 immediately (simulates Chrome delegating to an existing session).
     ExitImmediately,
     /// Stays alive but never opens a port (for `StartupTimeout`).
@@ -33,6 +36,7 @@ impl FakeMode {
         match self {
             FakeMode::Serve => "serve",
             FakeMode::ServeSingleton => "serve_singleton",
+            FakeMode::ServeSingletonSymlink => "serve_singleton_symlink",
             FakeMode::ExitImmediately => "exit_immediately",
             FakeMode::HangNoPort => "hang_no_port",
             FakeMode::IgnoreSigterm => "ignore_sigterm",
@@ -73,6 +77,7 @@ pub fn build_command(spec: &FakeChromeSpec<'_>) -> Command {
 #[test]
 fn _dummy_use_support() {
     let _ = FakeMode::Serve.env_value();
+    let _ = FakeMode::ServeSingletonSymlink.env_value();
     let _ = fake_chrome_path();
     let _ = build_command(&FakeChromeSpec {
         mode: FakeMode::Serve,

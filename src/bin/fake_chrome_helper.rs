@@ -14,8 +14,13 @@
 //! - `serve_singleton`: like `serve`, but before binding it checks for
 //!   `<user-data-dir>/SingletonLock`. If the lock exists the process exits
 //!   with code 1 (simulates Chrome delegating to an existing instance).
-//!   Otherwise it creates the lock, proceeds as `serve`, and removes the
-//!   lock on clean SIGTERM shutdown (unix).
+//!   Otherwise it creates the lock **as a plain file**, proceeds as `serve`,
+//!   and removes the lock on clean SIGTERM shutdown (unix).
+//! - `serve_singleton_symlink`: like `serve_singleton`, but creates
+//!   `SingletonLock` as a **dangling symlink** (target never exists), mimicking
+//!   real Chrome >= 151 behaviour. Uses `symlink_metadata` to detect
+//!   an existing lock so it correctly sees both plain files and dangling
+//!   symlinks created by prior instances.
 //! - `exit_immediately`: returns exit code 1 right away. Used to simulate the
 //!   "Chrome delegated to an existing session" failure mode.
 //! - `hang_no_port`: stays alive but never binds anything. Used to drive
@@ -32,6 +37,17 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+/// Selects how `SingletonLock` is written by the fake.
+#[derive(Clone, Copy)]
+enum LockKind {
+    /// No singleton lock behaviour; skip the lock check entirely.
+    None,
+    /// Write a plain file (mimics fake Chrome / Chrome < 151).
+    PlainFile,
+    /// Write a dangling symlink (mimics real Chrome >= 151).
+    DanglingSymlink,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
@@ -47,9 +63,10 @@ async fn main() -> ExitCode {
         "hang_no_port" => loop {
             tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
         },
-        "ignore_sigterm" => serve(args, true, false).await,
-        "serve" => serve(args, false, false).await,
-        "serve_singleton" => serve(args, false, true).await,
+        "ignore_sigterm" => serve(args, true, LockKind::None).await,
+        "serve" => serve(args, false, LockKind::None).await,
+        "serve_singleton" => serve(args, false, LockKind::PlainFile).await,
+        "serve_singleton_symlink" => serve(args, false, LockKind::DanglingSymlink).await,
         _ => ExitCode::from(2),
     }
 }
@@ -76,18 +93,11 @@ fn parse_args(args: &[String]) -> (u16, Option<PathBuf>) {
     (port, user_data_dir)
 }
 
-async fn serve(args: Vec<String>, ignore_sigterm: bool, singleton: bool) -> ExitCode {
+async fn serve(args: Vec<String>, ignore_sigterm: bool, lock_kind: LockKind) -> ExitCode {
     let (port, user_data_dir) = parse_args(&args);
 
-    // serve_singleton: if SingletonLock exists, exit 1 (simulates Chrome
-    // delegating to the existing instance). Otherwise create the lock.
-    if singleton && let Some(ref dir) = user_data_dir {
-        let lock = dir.join("SingletonLock");
-        if lock.exists() {
-            return ExitCode::from(1);
-        }
-        let _ = fs::create_dir_all(dir);
-        let _ = fs::write(&lock, "");
+    if let Some(early) = setup_singleton_lock(lock_kind, &user_data_dir) {
+        return early;
     }
 
     let bind = format!("127.0.0.1:{port}");
@@ -106,6 +116,58 @@ async fn serve(args: Vec<String>, ignore_sigterm: bool, singleton: bool) -> Exit
         let _ = fs::write(&file, format!("{actual_port}\n"));
     }
 
+    serve_loop(listener, ignore_sigterm, lock_kind, user_data_dir).await
+}
+
+/// Checks and creates the `SingletonLock` entry for singleton modes.
+///
+/// Returns `Some(ExitCode::from(1))` if a lock already exists (the new process
+/// should delegate to the existing instance), or `None` if the lock was created
+/// successfully (or if `lock_kind` is `LockKind::None`).
+fn setup_singleton_lock(lock_kind: LockKind, user_data_dir: &Option<PathBuf>) -> Option<ExitCode> {
+    let dir = match (matches!(lock_kind, LockKind::None), user_data_dir) {
+        (false, Some(d)) => d,
+        _ => return None,
+    };
+
+    let lock = dir.join("SingletonLock");
+    // Use `symlink_metadata` so that dangling symlinks (Chrome >= 151) are
+    // detected as "lock exists" just like plain files.
+    if fs::symlink_metadata(&lock).is_ok() {
+        return Some(ExitCode::from(1));
+    }
+
+    let _ = fs::create_dir_all(dir);
+    match lock_kind {
+        LockKind::PlainFile => {
+            let _ = fs::write(&lock, "");
+        }
+        LockKind::DanglingSymlink => {
+            #[cfg(unix)]
+            {
+                // Create a symlink whose target (`nonexistent-target`) is never
+                // created, mimicking Chrome >= 151.
+                let _ = std::os::unix::fs::symlink("nonexistent-target", &lock);
+            }
+            #[cfg(not(unix))]
+            {
+                // On non-unix, fall back to a plain file so the binary still
+                // compiles; the symlink-specific tests are unix-only.
+                let _ = fs::write(&lock, "");
+            }
+        }
+        LockKind::None => {}
+    }
+    None
+}
+
+/// Runs the main accept loop after the TCP listener is bound.
+async fn serve_loop(
+    listener: tokio::net::TcpListener,
+    ignore_sigterm: bool,
+    lock_kind: LockKind,
+    user_data_dir: Option<PathBuf>,
+) -> ExitCode {
     #[cfg(unix)]
     {
         let mut sigterm =
@@ -120,7 +182,9 @@ async fn serve(args: Vec<String>, ignore_sigterm: bool, singleton: bool) -> Exit
                     if ignore_sigterm {
                         // Swallow SIGTERM so the parent must escalate to SIGKILL.
                     } else {
-                        if singleton && let Some(ref dir) = user_data_dir {
+                        if !matches!(lock_kind, LockKind::None)
+                            && let Some(ref dir) = user_data_dir
+                        {
                             let _ = fs::remove_file(dir.join("SingletonLock"));
                         }
                         return ExitCode::SUCCESS;
@@ -137,7 +201,8 @@ async fn serve(args: Vec<String>, ignore_sigterm: bool, singleton: bool) -> Exit
     #[cfg(not(unix))]
     {
         let _ = ignore_sigterm;
-        let _ = singleton;
+        let _ = lock_kind;
+        let _ = user_data_dir;
         loop {
             if listener.accept().await.is_err() {
                 return ExitCode::from(5);
