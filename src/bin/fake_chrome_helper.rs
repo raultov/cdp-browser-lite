@@ -11,6 +11,11 @@
 //!   binding, writes `<user-data-dir>/DevToolsActivePort` with the actual
 //!   port. Then loops accepting (and discarding) incoming connections until
 //!   killed. SIGTERM terminates the process (default behaviour).
+//! - `serve_singleton`: like `serve`, but before binding it checks for
+//!   `<user-data-dir>/SingletonLock`. If the lock exists the process exits
+//!   with code 1 (simulates Chrome delegating to an existing instance).
+//!   Otherwise it creates the lock, proceeds as `serve`, and removes the
+//!   lock on clean SIGTERM shutdown (unix).
 //! - `exit_immediately`: returns exit code 1 right away. Used to simulate the
 //!   "Chrome delegated to an existing session" failure mode.
 //! - `hang_no_port`: stays alive but never binds anything. Used to drive
@@ -42,8 +47,9 @@ async fn main() -> ExitCode {
         "hang_no_port" => loop {
             tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
         },
-        "ignore_sigterm" => serve(args, true).await,
-        "serve" => serve(args, false).await,
+        "ignore_sigterm" => serve(args, true, false).await,
+        "serve" => serve(args, false, false).await,
+        "serve_singleton" => serve(args, false, true).await,
         _ => ExitCode::from(2),
     }
 }
@@ -70,8 +76,19 @@ fn parse_args(args: &[String]) -> (u16, Option<PathBuf>) {
     (port, user_data_dir)
 }
 
-async fn serve(args: Vec<String>, ignore_sigterm: bool) -> ExitCode {
+async fn serve(args: Vec<String>, ignore_sigterm: bool, singleton: bool) -> ExitCode {
     let (port, user_data_dir) = parse_args(&args);
+
+    // serve_singleton: if SingletonLock exists, exit 1 (simulates Chrome
+    // delegating to the existing instance). Otherwise create the lock.
+    if singleton && let Some(ref dir) = user_data_dir {
+        let lock = dir.join("SingletonLock");
+        if lock.exists() {
+            return ExitCode::from(1);
+        }
+        let _ = fs::create_dir_all(dir);
+        let _ = fs::write(&lock, "");
+    }
 
     let bind = format!("127.0.0.1:{port}");
     let listener = match tokio::net::TcpListener::bind(&bind).await {
@@ -83,44 +100,44 @@ async fn serve(args: Vec<String>, ignore_sigterm: bool) -> ExitCode {
         Err(_) => return ExitCode::from(3),
     };
 
-    if let Some(dir) = user_data_dir {
-        let _ = fs::create_dir_all(&dir);
+    if let Some(ref dir) = user_data_dir {
+        let _ = fs::create_dir_all(dir);
         let file = dir.join("DevToolsActivePort");
         let _ = fs::write(&file, format!("{actual_port}\n"));
     }
 
-    if ignore_sigterm {
-        #[cfg(unix)]
-        {
-            let mut sigterm =
-                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-                    Ok(s) => s,
-                    Err(_) => return ExitCode::from(4),
-                };
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = sigterm.recv() => {
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(_) => return ExitCode::from(4),
+            };
+        loop {
+            tokio::select! {
+                biased;
+                _ = sigterm.recv() => {
+                    if ignore_sigterm {
                         // Swallow SIGTERM so the parent must escalate to SIGKILL.
-                    }
-                    accept_res = listener.accept() => {
-                        if accept_res.is_err() {
-                            return ExitCode::from(5);
+                    } else {
+                        if singleton && let Some(ref dir) = user_data_dir {
+                            let _ = fs::remove_file(dir.join("SingletonLock"));
                         }
+                        return ExitCode::SUCCESS;
+                    }
+                }
+                accept_res = listener.accept() => {
+                    if accept_res.is_err() {
+                        return ExitCode::from(5);
                     }
                 }
             }
         }
-        #[cfg(not(unix))]
-        {
-            let _ = ignore_sigterm;
-            loop {
-                if listener.accept().await.is_err() {
-                    return ExitCode::from(5);
-                }
-            }
-        }
-    } else {
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = ignore_sigterm;
+        let _ = singleton;
         loop {
             if listener.accept().await.is_err() {
                 return ExitCode::from(5);

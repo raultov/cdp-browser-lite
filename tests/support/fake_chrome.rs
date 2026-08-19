@@ -13,10 +13,12 @@ use tokio::process::Command;
 
 /// Behaviour modes of the fake chrome binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Each test uses a subset.
+#[expect(dead_code, reason = "Each test uses a subset of modes")]
 pub enum FakeMode {
     /// Binds the requested port, writes `DevToolsActivePort`, accepts connections.
     Serve,
+    /// Binds like Serve, but exits if SingletonLock exists and cleans it up on SIGTERM.
+    ServeSingleton,
     /// Exits with code 1 immediately (simulates Chrome delegating to an existing session).
     ExitImmediately,
     /// Stays alive but never opens a port (for `StartupTimeout`).
@@ -30,6 +32,7 @@ impl FakeMode {
     pub fn env_value(self) -> &'static str {
         match self {
             FakeMode::Serve => "serve",
+            FakeMode::ServeSingleton => "serve_singleton",
             FakeMode::ExitImmediately => "exit_immediately",
             FakeMode::HangNoPort => "hang_no_port",
             FakeMode::IgnoreSigterm => "ignore_sigterm",
@@ -38,7 +41,6 @@ impl FakeMode {
 }
 
 /// Specification for building a command against the fake chrome.
-#[allow(dead_code)]
 pub struct FakeChromeSpec<'a> {
     pub mode: FakeMode,
     /// Path to the file where the fake writes the received argv.
@@ -49,14 +51,12 @@ pub struct FakeChromeSpec<'a> {
 
 /// Absolute path to the `fake_chrome_helper` binary, resolved at
 /// compile time via `CARGO_BIN_EXE_*`.
-#[allow(dead_code)]
 pub fn fake_chrome_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_fake_chrome_helper"))
 }
 
 /// Builds a `tokio::process::Command` ready for `spawn()`, with the mode,
 /// the args log, and the `stdio` redirected to null.
-#[allow(dead_code)]
 pub fn build_command(spec: &FakeChromeSpec<'_>) -> Command {
     let mut cmd = Command::new(fake_chrome_path());
     cmd.env("FAKE_CHROME_MODE", spec.mode.env_value());
@@ -68,4 +68,15 @@ pub fn build_command(spec: &FakeChromeSpec<'_>) -> Command {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     cmd
+}
+
+#[test]
+fn _dummy_use_support() {
+    let _ = FakeMode::Serve.env_value();
+    let _ = fake_chrome_path();
+    let _ = build_command(&FakeChromeSpec {
+        mode: FakeMode::Serve,
+        args_log: Path::new(""),
+        user_data_dir: None,
+    });
 }
