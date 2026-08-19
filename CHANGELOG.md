@@ -5,6 +5,22 @@ All notable changes to `cdp-browser-lite` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-08-19
+
+### Added
+- `BrowserPool` for managing multiple Chrome processes concurrently, with automatic port tracking and termination of managed instances upon drop.
+- `PortAllocator` replaces the previous port search mechanism, using deterministic reservations to eliminate cross-process bind races.
+- `ProfileMode::PersistentPerPort` dynamically derives the profile directory from the resolved port, enabling multi-instance `LaunchMode::Auto`.
+- Added `Browser::profile_dir` async accessor to retrieve the resolved profile directory path.
+
+### Changed
+- **Breaking:** `ProfileMode` is now `#[non_exhaustive]` to allow future variants.
+- **Breaking:** `Browser::debug_address`, `is_alive`, `is_managed`, and `pid` are now `async` methods to prevent silent failures under lock contention.
+- **Breaking:** `Profile::prepare` now requires a `port` argument to resolve dynamic profiles.
+- `LaunchMode::Auto` logic has been reworked: it now properly avoids mutating locks of live processes (fixing directory corruption/races) and delays profile creation until the port is finalized (fixing temporal tempdir leaks).
+- `ports::find_free_port_near` has been removed in favor of `PortAllocator`.
+
+
 ## [0.1.1] - 2026-07-20
 
 ### Fixed
