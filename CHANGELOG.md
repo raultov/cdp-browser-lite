@@ -5,6 +5,51 @@ All notable changes to `cdp-browser-lite` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-08-19
+
+### Fixed
+- `ProfileMode::managed_lock_exists` now uses `std::fs::symlink_metadata` instead of
+  `Path::exists` to detect `SingletonLock`.  On Chrome >= 151 `SingletonLock` is written
+  as a **dangling symlink** (the target `<hostname>-<pid>` is never created); `Path::exists`
+  follows the symlink and returned `false`, so `LaunchMode::Auto` never recognised a live
+  managed instance and fell through to `AttachAt` instead of `LaunchAt`.  This was the root
+  cause of the B3 failure in `chrome-debug-mcp`.  `symlink_metadata` does not follow the
+  symlink, so it returns `true` for both plain files (fake Chrome / Chrome < 151) and
+  dangling symlinks (Chrome >= 151).
+- `PortAllocator` now keeps its reservation set **process-wide** instead of per-instance,
+  so two independent allocators (e.g. several `BrowserPool`s running in parallel) cannot
+  double-reserve the same port.  Previously the bind-probe-then-drop step in
+  `reserve_near` could hand the same just-released ephemeral port to a second allocator,
+  causing intermittent `PortConflict` failures (a `LaunchMode::Auto`/`BrowserPool` flake on
+  0.2.2).  The probe-reserve step is also serialised under the shared lock, closing that
+  TOCTOU window within the process.
+- `BrowserPool::open` with an ephemeral (`port == 0`) config now retries with a fresh
+  reservation (bounded, `EPHEMERAL_OPEN_RETRIES = 5`) if a process that binds ports without
+  going through the allocator — e.g. a mock devtools server — wins the race for the reserved
+  port between the probe and Chrome's bind.  Fixed-port opens still fail fast with
+  `PortConflict` as before.
+
+### Tested
+- Added `serve_singleton_symlink` mode to `src/bin/fake_chrome_helper.rs`: creates
+  `SingletonLock` as a dangling symlink (target `nonexistent-target` never exists),
+  faithfully replicating Chrome >= 151 behaviour.
+- Added `FakeMode::ServeSingletonSymlink` to `tests/support/fake_chrome.rs`.
+- Added three unit tests in `src/config.rs` for `managed_lock_exists`:
+  - `given_symlink_lock_when_managed_lock_exists_then_true` (RED on 0.2.2, green after fix)
+  - `given_plain_file_lock_when_managed_lock_exists_then_true` (regression guard)
+  - `given_no_lock_when_managed_lock_exists_then_false`
+- Added `given_distinct_allocators_same_base_when_reserving_concurrently_then_ports_are_distinct`
+  regression test in `src/ports.rs` (RED with the per-allocator reservation set, green with the
+  process-wide set).
+- Added three integration tests in `tests/profile_per_port.rs` mirroring the B3 scenarios
+  with `ServeSingletonSymlink`: different port, different profile dir, lock preserved.
+- Added `given_real_chrome_on_configured_port_when_second_manager_ensures_then_uses_different_port_and_profile`
+  E2E test (`#[ignore]`) in `tests/e2e_real_chrome.rs` covering the full B3 scenario
+  on a machine with real Chrome >= 151.
+- Introduced a `tokio::sync::Mutex` guard (`ENV_LOCK`) in `tests/profile_per_port.rs` to
+  serialize tests that mutate `FAKE_CHROME_MODE` in the process environment, preventing
+  spurious failures from concurrent test execution.
+
 ## [0.2.2] - 2026-08-19
 
 ### Fixed
@@ -111,6 +156,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supported platform, plus an E2E job that installs Chrome and runs the
   ignored tests.
 
+[0.2.3]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.2.3
 [0.2.2]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.2.2
 [0.1.1]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.1.1
 [0.1.0]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.1.0
