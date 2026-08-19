@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use cdp_browser_lite::browser::Browser;
@@ -8,6 +9,18 @@ use support::fake_chrome::{FakeMode, fake_chrome_path};
 use support::mock_devtools::{MockBehavior, MockChrome};
 
 mod support;
+
+/// Tests that call `set_fake_chrome_env` mutate process-level environment
+/// variables. Because `cargo test` runs tests concurrently on multiple threads,
+/// a second test can overwrite `FAKE_CHROME_MODE` between when a first test
+/// sets it and when the fake Chrome process is actually spawned, causing
+/// spurious failures. We use a `tokio::sync::Mutex` (whose guard is `Send`)
+/// so the guard can be held across `.await` points inside async tests.
+static ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+fn env_lock() -> &'static tokio::sync::Mutex<()> {
+    ENV_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
 
 fn pick_free_port() -> u16 {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -26,6 +39,10 @@ fn fresh_user_data_dir(label: &str) -> PathBuf {
     dir
 }
 
+/// Sets `FAKE_CHROME_MODE` and `FAKE_CHROME_ARGS_LOG` in the process
+/// environment. Callers **must** hold `env_lock()` for the entire test body
+/// (from before this call until after the fake Chrome process is spawned) to
+/// prevent concurrent tests from overwriting the env var in between.
 fn set_fake_chrome_env(mode: FakeMode, args_log: &std::path::Path) {
     unsafe {
         std::env::set_var("FAKE_CHROME_MODE", mode.env_value());
@@ -50,6 +67,8 @@ fn ppp_config(port: u16, root: PathBuf) -> BrowserConfig {
 #[tokio::test]
 async fn given_live_managed_instance_when_ensure_auto_then_new_instance_uses_a_different_profile_dir()
  {
+    let _guard = env_lock().lock().await;
+
     let root = fresh_user_data_dir("diff-dir");
     let args_log = root.join("args.log");
     set_fake_chrome_env(FakeMode::ServeSingleton, &args_log);
@@ -79,6 +98,8 @@ async fn given_live_managed_instance_when_ensure_auto_then_new_instance_uses_a_d
 
 #[tokio::test]
 async fn given_live_managed_instance_when_ensure_auto_then_existing_singleton_lock_is_preserved() {
+    let _guard = env_lock().lock().await;
+
     let root = fresh_user_data_dir("pres-lock");
     let args_log = root.join("args.log");
     set_fake_chrome_env(FakeMode::ServeSingleton, &args_log);
@@ -107,6 +128,8 @@ async fn given_live_managed_instance_when_ensure_auto_then_existing_singleton_lo
 
 #[tokio::test]
 async fn given_live_managed_instance_when_ensure_auto_then_new_instance_uses_a_different_port() {
+    let _guard = env_lock().lock().await;
+
     let root = fresh_user_data_dir("diff-port");
     let args_log = root.join("args.log");
     set_fake_chrome_env(FakeMode::ServeSingleton, &args_log);
@@ -151,6 +174,8 @@ async fn given_attachable_chrome_when_ensure_auto_then_no_temp_directory_is_crea
 
 #[tokio::test]
 async fn given_stale_singleton_lock_when_launch_new_then_lock_is_removed() {
+    let _guard = env_lock().lock().await;
+
     let root = fresh_user_data_dir("stale-lock");
     let args_log = root.join("args.log");
     set_fake_chrome_env(FakeMode::ServeSingleton, &args_log);
@@ -210,4 +235,105 @@ async fn given_persistent_per_port_when_preparing_then_dir_matches_root_prefix_p
 
     let expected = real_root.join("bar-1234");
     assert_eq!(p2.dir, Some(expected));
+}
+
+// ── Chrome >= 151 dangling-symlink SingletonLock regression tests ────────────
+//
+// These three tests mirror the existing B3 integration tests but use
+// `FakeMode::ServeSingletonSymlink` (dangling symlink) instead of
+// `FakeMode::ServeSingleton` (plain file).  They were RED on 0.2.2 and must
+// be GREEN after the `managed_lock_exists` fix in Phase 2.
+
+#[tokio::test]
+#[cfg(unix)]
+async fn given_symlink_lock_live_managed_instance_when_ensure_auto_then_new_instance_uses_a_different_port()
+ {
+    let _guard = env_lock().lock().await;
+
+    let root = fresh_user_data_dir("sym-diff-port");
+    let args_log = root.join("args.log");
+    set_fake_chrome_env(FakeMode::ServeSingletonSymlink, &args_log);
+
+    let base_port = pick_free_port();
+    let b1 = Browser::ensure(ppp_config(base_port, root.clone()))
+        .await
+        .unwrap();
+    let (_, p1) = b1.debug_address().await;
+
+    let b2 = Browser::ensure(ppp_config(base_port, root.clone()))
+        .await
+        .unwrap();
+    let (_, p2) = b2.debug_address().await;
+
+    assert_ne!(p1, p2, "ports must differ (symlink-lock B3)");
+
+    b1.stop().await.unwrap();
+    b2.stop().await.unwrap();
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn given_symlink_lock_live_managed_instance_when_ensure_auto_then_new_instance_uses_a_different_profile_dir()
+ {
+    let _guard = env_lock().lock().await;
+
+    let root = fresh_user_data_dir("sym-diff-dir");
+    let args_log = root.join("args.log");
+    set_fake_chrome_env(FakeMode::ServeSingletonSymlink, &args_log);
+
+    let base_port = pick_free_port();
+    let b1 = Browser::ensure(ppp_config(base_port, root.clone()))
+        .await
+        .unwrap();
+    let b2 = Browser::ensure(ppp_config(base_port, root.clone()))
+        .await
+        .unwrap();
+
+    let dir1 = b1.profile_dir().await.unwrap();
+    let dir2 = b2.profile_dir().await.unwrap();
+
+    assert_ne!(
+        dir1, dir2,
+        "profile directories must differ (symlink-lock B3)"
+    );
+
+    b1.stop().await.unwrap();
+    b2.stop().await.unwrap();
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn given_symlink_lock_live_managed_instance_when_ensure_auto_then_existing_singleton_lock_is_preserved()
+ {
+    let _guard = env_lock().lock().await;
+
+    let root = fresh_user_data_dir("sym-pres-lock");
+    let args_log = root.join("args.log");
+    set_fake_chrome_env(FakeMode::ServeSingletonSymlink, &args_log);
+
+    let base_port = pick_free_port();
+    let b1 = Browser::ensure(ppp_config(base_port, root.clone()))
+        .await
+        .unwrap();
+    let dir1 = b1.profile_dir().await.unwrap();
+    let lock1 = dir1.join("SingletonLock");
+
+    // The dangling symlink must exist (symlink_metadata succeeds even though
+    // .exists() would return false on 0.2.2).
+    assert!(
+        std::fs::symlink_metadata(&lock1).is_ok(),
+        "first instance must create a SingletonLock symlink"
+    );
+
+    let b2 = Browser::ensure(ppp_config(base_port, root.clone()))
+        .await
+        .unwrap();
+
+    assert!(
+        std::fs::symlink_metadata(&lock1).is_ok(),
+        "second instance must not remove first instance's SingletonLock"
+    );
+
+    b1.stop().await.unwrap();
+    b2.stop().await.unwrap();
 }
