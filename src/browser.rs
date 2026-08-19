@@ -1,5 +1,5 @@
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use cdp_lite::client::CdpClient;
@@ -9,7 +9,7 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::config::{BrowserConfig, LaunchMode};
 use crate::discovery;
 use crate::error::BrowserError;
-use crate::ports::PortSearch;
+use crate::ports::{PortAllocator, PortReservation, PortSearch};
 use crate::probe;
 use crate::process::{ChromeProcess, SpawnSpec, spawn};
 use crate::profile::Profile;
@@ -72,13 +72,30 @@ impl BrowserState {
 
 enum AutoDecision {
     AttachAt(u16),
-    LaunchAt(u16),
+    LaunchAt {
+        port: u16,
+        reservation: Option<PortReservation>,
+    },
+}
+
+fn default_allocator() -> &'static Arc<PortAllocator> {
+    static ALLOCATOR: OnceLock<Arc<PortAllocator>> = OnceLock::new();
+    ALLOCATOR.get_or_init(PortAllocator::new)
 }
 
 impl Browser {
     /// Ensures a browser is available based on the provided configuration.
     /// Depending on `LaunchMode`, it will attach, launch a new instance, or try both.
     pub async fn ensure(config: BrowserConfig) -> Result<Browser, BrowserError> {
+        Self::ensure_with_allocator(config, default_allocator().clone()).await
+    }
+
+    /// Like `ensure`, but uses a specific port allocator instead of the process-wide default.
+    /// Useful for tests or isolation (e.g., in `BrowserPool`).
+    pub async fn ensure_with_allocator(
+        config: BrowserConfig,
+        allocator: Arc<PortAllocator>,
+    ) -> Result<Browser, BrowserError> {
         config.validate()?;
 
         match config.mode {
@@ -107,16 +124,19 @@ impl Browser {
                     Self::spawn_managed(config).await
                 }
             }
-            LaunchMode::Auto => Self::ensure_auto(config).await,
+            LaunchMode::Auto => Self::ensure_auto(config, allocator).await,
         }
     }
 
     async fn decide_auto(
         config: &BrowserConfig,
-        allocator: &std::sync::Arc<crate::ports::PortAllocator>,
+        allocator: &Arc<PortAllocator>,
     ) -> Result<AutoDecision, BrowserError> {
         if !probe::is_port_open(&config.host, config.port, PROBE_TIMEOUT).await {
-            return Ok(AutoDecision::LaunchAt(config.port));
+            return Ok(AutoDecision::LaunchAt {
+                port: config.port,
+                reservation: None,
+            });
         }
 
         if !probe::is_chrome_cdp(&config.host, config.port).await {
@@ -126,7 +146,10 @@ impl Browser {
                     |_| true,
                 )
                 .await?;
-            return Ok(AutoDecision::LaunchAt(res.port()));
+            return Ok(AutoDecision::LaunchAt {
+                port: res.port(),
+                reservation: Some(res),
+            });
         }
 
         if config.profile.managed_lock_exists(config.port) {
@@ -137,14 +160,19 @@ impl Browser {
                     move |p| !p_mode.managed_lock_exists(p),
                 )
                 .await?;
-            return Ok(AutoDecision::LaunchAt(res.port()));
+            return Ok(AutoDecision::LaunchAt {
+                port: res.port(),
+                reservation: Some(res),
+            });
         }
 
         Ok(AutoDecision::AttachAt(config.port))
     }
 
-    async fn ensure_auto(config: BrowserConfig) -> Result<Browser, BrowserError> {
-        let allocator = crate::ports::PortAllocator::new();
+    async fn ensure_auto(
+        config: BrowserConfig,
+        allocator: Arc<PortAllocator>,
+    ) -> Result<Browser, BrowserError> {
         let decision = Self::decide_auto(&config, &allocator).await?;
         match decision {
             AutoDecision::AttachAt(port) => {
@@ -155,10 +183,14 @@ impl Browser {
                     state: Arc::new(TokioMutex::new(BrowserState::new(None, None, port, false))),
                 })
             }
-            AutoDecision::LaunchAt(port) => {
+            AutoDecision::LaunchAt { port, reservation } => {
                 let mut cfg = config;
                 cfg.port = port;
-                Self::spawn_managed(cfg).await
+                let browser = Self::spawn_managed(cfg).await?;
+                // The reservation is implicitly held across the spawn_managed await point,
+                // preventing other Auto callers from racing this port. It drops naturally here.
+                drop(reservation);
+                Ok(browser)
             }
         }
     }

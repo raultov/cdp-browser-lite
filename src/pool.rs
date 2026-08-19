@@ -12,6 +12,13 @@ use crate::{Browser, BrowserConfig, BrowserError};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BrowserId(u64);
 
+impl BrowserId {
+    #[doc(hidden)]
+    pub fn from_u64_for_test(id: u64) -> Self {
+        Self(id)
+    }
+}
+
 /// Snapshot of a browser's resolved runtime metadata, captured at open time.
 /// Reading from a pool entry never touches `Browser`'s internal mutex, which
 /// keeps accessors race-free under contention.
@@ -88,13 +95,14 @@ impl BrowserPool {
             config.port = res.port();
         }
 
-        let browser = match Browser::ensure(config).await {
-            Ok(b) => b,
-            Err(e) => {
-                drop(reservation);
-                return Err(e);
-            }
-        };
+        let browser =
+            match Browser::ensure_with_allocator(config, self.inner.allocator.clone()).await {
+                Ok(b) => b,
+                Err(e) => {
+                    drop(reservation);
+                    return Err(e);
+                }
+            };
 
         let id = BrowserId(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
         let (host, port) = browser.debug_address().await;
