@@ -290,9 +290,16 @@ impl ProfileMode {
 
     /// Pure. True if a *managed* instance appears to hold this port.
     /// Always false for `Ephemeral` and `UserDefault`.
+    ///
+    /// Uses `symlink_metadata` rather than `Path::exists` so that a dangling
+    /// symlink (Chrome >= 151 writes `SingletonLock` as a symlink to a target
+    /// that is never created) is detected correctly. `Path::exists` follows
+    /// the symlink and returns `false` for a dangling symlink; `symlink_metadata`
+    /// does not follow it and returns `true` for any filesystem entry, whether
+    /// a plain file or a dangling symlink.
     pub fn managed_lock_exists(&self, port: u16) -> bool {
         self.dir_for_port(port)
-            .map(|d| d.join("SingletonLock").exists())
+            .map(|d| std::fs::symlink_metadata(d.join("SingletonLock")).is_ok())
             .unwrap_or(false)
     }
 }
@@ -484,5 +491,54 @@ mod tests {
         assert!(!is_local_host("127"));
         assert!(!is_local_host("localhost.example.com"));
         assert!(!is_local_host("::2"));
+    }
+
+    // ── managed_lock_exists unit tests ──────────────────────────────────────
+
+    /// Helper: build a `PersistentPerPort` profile rooted at `root`.
+    fn ppp(root: std::path::PathBuf) -> ProfileMode {
+        ProfileMode::PersistentPerPort {
+            root,
+            prefix: "profile-".to_string(),
+        }
+    }
+
+    #[test]
+    fn given_no_lock_when_managed_lock_exists_then_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = ppp(dir.path().to_path_buf());
+        // No SingletonLock file exists at all.
+        assert!(!profile.managed_lock_exists(9222));
+    }
+
+    #[test]
+    fn given_plain_file_lock_when_managed_lock_exists_then_true() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile_dir = dir.path().join("profile-9222");
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        std::fs::write(profile_dir.join("SingletonLock"), "").unwrap();
+
+        let profile = ppp(dir.path().to_path_buf());
+        assert!(
+            profile.managed_lock_exists(9222),
+            "plain-file lock must be detected (fake Chrome / Chrome < 151)"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn given_symlink_lock_when_managed_lock_exists_then_true() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile_dir = dir.path().join("profile-9222");
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        // Dangling symlink: target does not exist, mimicking Chrome >= 151.
+        std::os::unix::fs::symlink("nonexistent-target", profile_dir.join("SingletonLock"))
+            .unwrap();
+
+        let profile = ppp(dir.path().to_path_buf());
+        assert!(
+            profile.managed_lock_exists(9222),
+            "dangling-symlink lock must be detected (Chrome >= 151)"
+        );
     }
 }
