@@ -5,6 +5,35 @@ All notable changes to `cdp-browser-lite` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-08-22
+
+### Added
+- `test-support` cargo feature: re-exports the in-process DevTools HTTP/WebSocket
+  mocks under `cdp_browser_lite::test_support::mock_devtools` so downstream
+  crates can drive the library without re-implementing them. Pulls in
+  `tokio-tungstenite` and `futures-util` as transitive dependencies only when the
+  feature is enabled, so the default build stays slim.
+- `MockBehavior`, `MockChrome`, `MockDevTools`, `MockWsBehavior` are now the
+  documented public test-support API. The crate's own integration tests have
+  been migrated to the new path (their `[[test]]` entries are gated by
+  `required-features = ["test-support"]`).
+- Orphan sweep for ephemeral profiles: on every ephemeral `Profile::prepare`,
+  directories under the system temp dir matching the `cdp-browser-lite-`
+  prefix that are older than 24 h and whose `SingletonLock` owner PID is dead
+  (Unix) are removed best-effort. Prevents unbounded accumulation of profile
+  dirs when Chrome is killed abruptly (SIGKILL) without cleanup.
+- `--hide-crash-restore-bubble` added to the base launch flags, alongside the
+  existing `--disable-session-crashed-bubble`, to suppress the "Chrome didn't
+  shut down correctly" restore bubble on all Chrome versions.
+
+### Fixed
+- `patch_preferences` wrote `exit_type`/`exited_cleanly` at the root of
+  `Default/Preferences`, where Chrome never reads them (the real exit state
+  lives under `profile.exit_type`). It now patches `profile.exit_type` to
+  `Normal`, creating or replacing the `profile` object as needed, so
+  persistent profiles no longer trigger the restore bubble after an unclean
+  shutdown. Root-level writes were removed as dead.
+
 ## [0.3.1] - 2026-08-22
 
 ### Fixed
@@ -194,6 +223,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supported platform, plus an E2E job that installs Chrome and runs the
   ignored tests.
 
+[0.3.2]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.3.2
+[0.3.1]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.3.1
+[0.3.0]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.3.0
 [0.2.4]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.2.4
 [0.2.3]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.2.3
 [0.2.2]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.2.2
