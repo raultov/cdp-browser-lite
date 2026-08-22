@@ -1,7 +1,6 @@
 /target
 
 # Internal planning / design notes kept locally only.
-PLAN.md
+PLAN-*.md
 .idea/
 .knot/
-SPEC-001-multi-instance-and-profile-consistency.md

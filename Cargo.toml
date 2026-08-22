@@ -9,7 +9,7 @@ keywords = ["cdp", "chrome", "browser", "automation", "headless"]
 categories = ["web-programming"]
 
 [dependencies]
-cdp-lite = "0.1.3"
+cdp-lite = "0.2.0"
 tokio = { version = "1", features = ["process", "net", "time", "fs", "io-util", "sync", "macros", "rt-multi-thread", "signal"] }
 thiserror = "2"
 tracing = "0.1"
