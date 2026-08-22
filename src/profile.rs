@@ -1,9 +1,8 @@
 use std::fs;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 #[cfg(unix)]
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::config::ProfileMode;
 use crate::error::BrowserError;
