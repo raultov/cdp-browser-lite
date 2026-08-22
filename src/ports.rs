@@ -195,7 +195,16 @@ mod tests {
             .reserve_near(PortSearch::new("127.0.0.1", base, 5), |p| p != base)
             .await
             .unwrap();
-        assert_eq!(res.port(), base + 1);
+        // The contract: the rejected port is skipped, the returned port lies
+        // within the search range. Asserting an exact `base + 1` is fragile on
+        // kernels that briefly hold the next ephemeral port in TIME_WAIT
+        // (observed on macOS CI).
+        assert_ne!(res.port(), base, "predicate must reject base");
+        assert!(
+            (base..base + 5).contains(&res.port()),
+            "reserved port must be within the search range, got {}",
+            res.port()
+        );
     }
 
     #[cfg(unix)]
