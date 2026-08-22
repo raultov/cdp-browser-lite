@@ -5,6 +5,11 @@ All notable changes to `cdp-browser-lite` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-08-22
+
+### Fixed
+- Fixed compilation on non-Unix platforms (e.g. Windows) by gating `SystemTime` import and `EPHEMERAL_SWEEP_AGE` under `#[cfg(unix)]`.
+
 ## [0.3.2] - 2026-08-22
 
 ### Added
@@ -223,6 +228,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supported platform, plus an E2E job that installs Chrome and runs the
   ignored tests.
 
+[0.3.3]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.3.3
 [0.3.2]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.3.2
 [0.3.1]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.3.1
 [0.3.0]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.3.0
