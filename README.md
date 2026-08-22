@@ -102,6 +102,43 @@ created). `cdp-browser-lite` >= 0.2.3 detects this correctly using `symlink_meta
 that `LaunchMode::Auto` / `ProfileMode::PersistentPerPort` can distinguish a live managed
 instance from an unoccupied port on Chrome >= 151.
 
+## Test support for downstream crates
+
+`cdp-browser-lite` ships with the in-process DevTools HTTP and WebSocket mocks used by its
+own integration tests. They are re-exported under `cdp_browser_lite::test_support` and gated
+behind the `test-support` cargo feature so downstream binaries do not pay for the extra
+dependencies (`tokio-tungstenite`, `futures-util`) unless they opt in.
+
+Enable the feature in your own project:
+
+```toml
+[dev-dependencies]
+cdp-browser-lite = { version = "0.3", features = ["test-support"] }
+```
+
+Then point the library at the mock just like the crate's own integration tests do:
+
+```rust
+use cdp_browser_lite::test_support::mock_devtools::{
+    MockBehavior, MockChrome, MockDevTools, MockWsBehavior,
+};
+
+#[tokio::test]
+async fn my_attach_only_test() {
+    // Stands up a fake `/json/version` + CDP WebSocket peer on ephemeral ports.
+    let http = MockChrome::start(MockBehavior::KeepAlive).await;
+    let devtools = MockDevTools::start(MockWsBehavior::StayOpen).await;
+    assert!(devtools.connection_count() >= 0);
+    // ...use `devtools.http_port` and `devtools.ws_port` to drive `Browser`...
+}
+```
+
+The mocks cover the same scenarios as the upstream `tests/support/mock_devtools.rs` did:
+HTTP probe behaviour (`KeepAlive`, `CloseAfterResponse`, `KeepAliveThenCloseAfter`,
+`SilentPeer`, `NotChrome`, `IgnoresHttp10`), the full `Browser.*` / `Target.*` dispatch
+over WebSocket, `connection_count` accounting, and `drop_new_connections` to force a
+server-side socket close for reconnect-path tests.
+
 ## Troubleshooting
 - **CHROME_PATH**: Set `CHROME_PATH` to specify a custom Chrome executable location.
 - **Docker/Sandbox**: If running in Docker, you may need to add `.no_sandbox(true)` to `BrowserConfigBuilder`.
