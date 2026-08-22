@@ -17,6 +17,7 @@
 //! use std::time::Duration;
 //! use cdp_browser_lite::browser::Browser;
 //! use cdp_browser_lite::config::{BrowserConfig, LaunchMode};
+//! use cdp_browser_lite::NoParams;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,6 +34,10 @@
 //!
 //!     // Obtain a CDP client directly from the browser
 //!     let mut client = browser.client().await?;
+//!
+//!     // Drive several tabs over one browser-level connection
+//!     let tab = browser.new_tab("about:blank").await?;
+//!     tab.send_raw_command("Page.enable", NoParams).await?;
 //!     
 //!     // Stop the browser cleanly
 //!     browser.stop().await?;
@@ -52,10 +57,12 @@ pub mod profile;
 
 // Re-exports
 pub use browser::Browser;
+pub use cdp_lite::browser::{BrowserClient, TargetInfo};
 pub use cdp_lite::client::CdpClient;
 pub use cdp_lite::error::{CdpError, CdpResult};
 pub use cdp_lite::event_filter::EventFilter;
 pub use cdp_lite::protocol::{NoParams, WsCommand, WsResponse};
+pub use cdp_lite::tab::Tab;
 pub use config::{BrowserConfig, LaunchMode, ProfileMode};
 pub use error::BrowserError;
 pub use pool::{BrowserEntry, BrowserId, BrowserPool};

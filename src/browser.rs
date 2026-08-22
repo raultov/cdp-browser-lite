@@ -2,8 +2,10 @@ use std::fmt;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use cdp_lite::browser::{BrowserClient, TargetInfo};
 use cdp_lite::client::CdpClient;
 use cdp_lite::error::CdpError;
+use cdp_lite::tab::Tab;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::config::{BrowserConfig, LaunchMode};
@@ -33,6 +35,7 @@ pub struct BrowserState {
     managed: bool,
     stopped: bool,
     client_cache: Option<CdpClient>,
+    browser_client_cache: Option<BrowserClient>,
 }
 
 impl fmt::Debug for BrowserState {
@@ -46,6 +49,10 @@ impl fmt::Debug for BrowserState {
             .field(
                 "client_cache",
                 &self.client_cache.as_ref().map(|_| "CdpClient"),
+            )
+            .field(
+                "browser_client_cache",
+                &self.browser_client_cache.as_ref().map(|_| "BrowserClient"),
             )
             .finish()
     }
@@ -66,6 +73,7 @@ impl BrowserState {
             managed,
             stopped: false,
             client_cache: None,
+            browser_client_cache: None,
         }
     }
 }
@@ -253,69 +261,116 @@ impl Browser {
         }
     }
 
-    /// Retrieves a CDP client connected to this browser.
-    /// Reuses existing client connection if available and alive.
-    pub async fn client(&self) -> Result<CdpClient, BrowserError> {
+    /// Opens a fresh browser-level CDP connection to `host:port`.
+    ///
+    /// The `/json/version` lookup plus WebSocket handshake is bounded by
+    /// `connect_timeout`; `command_timeout` becomes the per-command response
+    /// timeout carried by the returned [`BrowserClient`].
+    async fn connect_browser_cdp(&self, port: u16) -> Result<BrowserClient, BrowserError> {
+        let addr = format!("{}:{}", self.config.host, port);
+        match tokio::time::timeout(
+            self.config.connect_timeout,
+            BrowserClient::connect(&addr, self.config.command_timeout),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(BrowserError::Cdp),
+            Err(_elapsed) => Err(BrowserError::RemoteUnavailable {
+                host: self.config.host.clone(),
+                port,
+            }),
+        }
+    }
+
+    /// Returns the cached page-level client if it is still alive, clearing the
+    /// cache otherwise. `Err(Stopped)` if the browser was stopped.
+    async fn live_cached_client(&self) -> Result<Option<CdpClient>, BrowserError> {
         let mut state = self.state.lock().await;
 
         if state.stopped {
             return Err(BrowserError::Stopped);
         }
 
-        // Check cached client liveness
-        let cached_dead = if let Some(ref client) = state.client_cache {
-            matches!(
-                client
-                    .send_raw_command("Browser.getVersion", serde_json::json!({}))
-                    .await,
-                Err(CdpError::Disconnected) | Err(CdpError::Timeout { .. })
-            )
-        } else {
-            true
+        let Some(client) = state.client_cache.clone() else {
+            return Ok(None);
         };
 
-        if !cached_dead {
-            return Ok(state.client_cache.as_ref().unwrap().clone());
-        }
-
-        if cached_dead {
+        if matches!(
+            client
+                .send_raw_command("Browser.getVersion", serde_json::json!({}))
+                .await,
+            Err(CdpError::Disconnected) | Err(CdpError::Timeout { .. })
+        ) {
             state.client_cache = None;
+            return Ok(None);
         }
 
-        if state.managed {
-            let process_alive = state
-                .process
-                .as_mut()
-                .map(|p| p.is_running())
-                .unwrap_or(false);
-
-            if !process_alive {
-                if self.config.auto_relaunch {
-                    drop(state);
-                    return self.relaunch_and_connect().await;
-                } else {
-                    return Err(BrowserError::Stopped);
-                }
-            }
-        }
-
-        let client = self.connect_cdp(state.actual_port).await?;
-
-        state.client_cache = Some(client.clone());
-        Ok(client)
+        Ok(state.client_cache.clone())
     }
 
-    async fn relaunch_and_connect(&self) -> Result<CdpClient, BrowserError> {
-        let new_browser = Self::ensure(self.config.clone()).await?;
+    /// Returns the cached browser-level client if it is still alive, clearing
+    /// the cache otherwise. `Err(Stopped)` if the browser was stopped.
+    async fn live_cached_browser_client(&self) -> Result<Option<BrowserClient>, BrowserError> {
+        let mut state = self.state.lock().await;
 
-        let new_port = {
-            let new_state = new_browser.state.lock().await;
-            new_state.actual_port
+        if state.stopped {
+            return Err(BrowserError::Stopped);
+        }
+
+        let Some(client) = state.browser_client_cache.clone() else {
+            return Ok(None);
         };
 
-        let client = self.connect_cdp(new_port).await?;
+        if matches!(
+            client
+                .client()
+                .send_raw_command("Browser.getVersion", serde_json::json!({}))
+                .await,
+            Err(CdpError::Disconnected) | Err(CdpError::Timeout { .. })
+        ) {
+            state.browser_client_cache = None;
+            return Ok(None);
+        }
 
-        let (new_process, new_profile, new_actual_port, new_managed) = {
+        Ok(state.browser_client_cache.clone())
+    }
+
+    /// Ensures the managed process is running (relaunching it when configured
+    /// and needed) and returns the port the CDP endpoint listens on.
+    async fn ensure_process_ready(&self) -> Result<u16, BrowserError> {
+        let mut state = self.state.lock().await;
+
+        if !state.managed {
+            return Ok(state.actual_port);
+        }
+
+        let process_alive = state
+            .process
+            .as_mut()
+            .map(|p| p.is_running())
+            .unwrap_or(false);
+
+        if process_alive {
+            return Ok(state.actual_port);
+        }
+
+        if !self.config.auto_relaunch {
+            return Err(BrowserError::Stopped);
+        }
+
+        drop(state);
+        self.relaunch().await
+    }
+
+    /// Launches a fresh instance from the original configuration, adopts its
+    /// process state into `self`, and returns the port of the new instance.
+    ///
+    /// Both connection caches are invalidated: they point at the dead process,
+    /// and a cached [`BrowserClient`] surviving here would be a zombie handle.
+    async fn relaunch(&self) -> Result<u16, BrowserError> {
+        let new_browser = Self::ensure(self.config.clone()).await?;
+
+        let (new_process, new_profile, new_port, new_managed) = {
             let mut new_state = new_browser.state.lock().await;
             (
                 new_state.process.take(),
@@ -329,13 +384,74 @@ impl Browser {
             let mut state = self.state.lock().await;
             state.process = new_process;
             state.profile = new_profile;
-            state.actual_port = new_actual_port;
+            state.actual_port = new_port;
             state.managed = new_managed;
             state.stopped = false;
-            state.client_cache = Some(client.clone());
+            state.client_cache = None;
+            state.browser_client_cache = None;
         }
 
+        Ok(new_port)
+    }
+
+    /// Retrieves a CDP client connected to this browser.
+    /// Reuses existing client connection if available and alive.
+    pub async fn client(&self) -> Result<CdpClient, BrowserError> {
+        if let Some(live) = self.live_cached_client().await? {
+            return Ok(live);
+        }
+
+        let port = self.ensure_process_ready().await?;
+        let client = self.connect_cdp(port).await?;
+        self.state.lock().await.client_cache = Some(client.clone());
         Ok(client)
+    }
+
+    /// Retrieves a browser-level CDP client connected to this browser.
+    /// Reuses the existing browser-level connection if available and alive.
+    pub async fn browser_client(&self) -> Result<BrowserClient, BrowserError> {
+        if let Some(live) = self.live_cached_browser_client().await? {
+            return Ok(live);
+        }
+
+        let port = self.ensure_process_ready().await?;
+        let client = self.connect_browser_cdp(port).await?;
+        self.state.lock().await.browser_client_cache = Some(client.clone());
+        Ok(client)
+    }
+
+    /// Opens a new tab on `url` and attaches to it.
+    ///
+    /// The returned [`Tab`] is driven over the shared browser-level
+    /// connection, as is every other tab obtained from this `Browser`.
+    pub async fn new_tab(&self, url: &str) -> Result<Tab, BrowserError> {
+        Ok(self.browser_client().await?.new_tab(url).await?)
+    }
+
+    /// Attaches to an existing tab by target id.
+    ///
+    /// The returned [`Tab`] is driven over the shared browser-level
+    /// connection.
+    pub async fn attach_tab(&self, target_id: &str) -> Result<Tab, BrowserError> {
+        Ok(self.browser_client().await?.attach(target_id).await?)
+    }
+
+    /// Attaches to every tab currently open, over the shared browser-level
+    /// connection.
+    pub async fn attach_to_all_tabs(&self) -> Result<Vec<Tab>, BrowserError> {
+        Ok(self.browser_client().await?.attach_to_all_tabs().await?)
+    }
+
+    /// Lists the tabs that can be attached to, skipping service workers,
+    /// iframes and the DevTools front-end.
+    pub async fn list_tabs(&self) -> Result<Vec<TargetInfo>, BrowserError> {
+        Ok(self.browser_client().await?.list_tabs().await?)
+    }
+
+    /// Closes a tab by target id, whether or not it is attached.
+    pub async fn close_tab(&self, target_id: &str) -> Result<(), BrowserError> {
+        self.browser_client().await?.close_tab(target_id).await?;
+        Ok(())
     }
 
     /// Stops the browser if managed, or simply closes the connection if attached.
@@ -348,6 +464,7 @@ impl Browser {
         }
 
         state.client_cache = None;
+        state.browser_client_cache = None;
 
         if state.managed {
             if let Some(ref mut proc) = state.process {
@@ -379,6 +496,7 @@ impl Browser {
             managed: new_state.managed,
             stopped: false,
             client_cache: None,
+            browser_client_cache: None,
         };
         Ok(())
     }
