@@ -36,6 +36,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## Multi-tab
+
+A single managed Chrome instance can drive N tabs over **one** browser-level WebSocket
+connection, with commands routed per-tab by `sessionId`:
+
+```rust
+use cdp_browser_lite::browser::Browser;
+use cdp_browser_lite::config::{BrowserConfig, LaunchMode};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let browser = Browser::ensure(
+        BrowserConfig::builder()
+            .mode(LaunchMode::LaunchNew)
+            .port(0)
+            .headless(true)
+            .build(),
+    )
+    .await?;
+
+    let docs = browser.new_tab("https://docs.rs").await?;
+    let crates = browser.new_tab("https://crates.io").await?;
+
+    // Each command only affects its own tab.
+    docs.send_raw_command("Page.enable", cdp_browser_lite::NoParams).await?;
+    crates.send_raw_command("Page.reload", serde_json::json!({})).await?;
+
+    for tab in browser.list_tabs().await? {
+        println!("{} -> {}", tab.target_id, tab.url);
+    }
+
+    browser.stop().await?;
+    Ok(())
+}
+```
+
+Notes:
+
+- `new_tab`, `attach_tab`, `attach_to_all_tabs`, `list_tabs` and `close_tab` all go
+  through the shared browser-level connection obtained from `browser_client()`.
+- If you call **both** `client()` and `browser_client()` on the same `Browser`, two
+  WebSocket connections are opened. This is correct and intentional: `client()` targets
+  a page-level endpoint while `browser_client()` targets the browser-level endpoint
+  (`/json/version`), which is a different socket.
+- Dropping a `Tab` neither closes nor detaches it; call `Tab::close` or `Tab::detach`
+  explicitly (upstream `cdp-lite` semantics).
+
 ## Launch Modes
 - `LaunchNew`: Always spawns a new managed browser process.
 - `AttachOnly`: Attaches to an already running instance.
