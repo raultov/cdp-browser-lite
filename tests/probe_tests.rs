@@ -1,8 +1,8 @@
 mod support;
 
 use cdp_browser_lite::probe::{is_chrome_cdp, is_port_open};
+use cdp_browser_lite::test_support::mock_devtools::{MockBehavior, MockChrome};
 use std::time::Duration;
-use support::mock_devtools::{MockBehavior, MockChrome};
 
 #[tokio::test]
 async fn given_chrome_modern_keep_alive_when_probing_then_true() {

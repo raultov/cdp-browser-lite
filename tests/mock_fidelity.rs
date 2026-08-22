@@ -2,9 +2,9 @@ mod support;
 
 use std::time::Duration;
 
+use cdp_browser_lite::test_support::mock_devtools::{MockDevTools, MockWsBehavior};
 use cdp_lite::browser::BrowserClient;
 use serde_json::json;
-use support::mock_devtools::{MockDevTools, MockWsBehavior};
 
 async fn connect_browser(mock: &MockDevTools) -> BrowserClient {
     BrowserClient::connect(

@@ -240,19 +240,18 @@ mod tests {
     async fn given_many_concurrent_reservations_when_awaited_then_all_ports_are_distinct() {
         let alloc = PortAllocator::new();
         let base = pick_ephemeral_port();
-        let mut tasks = Vec::new();
+        let mut tasks = tokio::task::JoinSet::new();
         for _ in 0..32 {
             let alloc_clone = alloc.clone();
-            tasks.push(tokio::spawn(async move {
+            tasks.spawn(async move {
                 alloc_clone
                     .reserve_near(PortSearch::new("127.0.0.1", base, 100), |_| true)
                     .await
                     .unwrap()
-            }));
+            });
         }
-        let results = futures_util::future::join_all(tasks).await;
         let mut ports = HashSet::new();
-        for res in results {
+        while let Some(res) = tasks.join_next().await {
             let port = res.unwrap().port();
             assert!(!ports.contains(&port), "Duplicate port reserved: {}", port);
             ports.insert(port);

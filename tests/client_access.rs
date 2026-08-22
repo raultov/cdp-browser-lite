@@ -5,7 +5,7 @@ use std::time::Duration;
 use cdp_browser_lite::browser::{Browser, BrowserState};
 use cdp_browser_lite::config::{BrowserConfig, LaunchMode};
 use cdp_browser_lite::error::BrowserError;
-use support::mock_devtools::{MockDevTools, MockWsBehavior};
+use cdp_browser_lite::test_support::mock_devtools::{MockDevTools, MockWsBehavior};
 
 #[tokio::test]
 async fn first_call_connects_and_works() {

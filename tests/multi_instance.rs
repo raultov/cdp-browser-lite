@@ -1,6 +1,5 @@
 mod support;
 
-use futures_util::future::join_all;
 use std::time::Duration;
 
 use cdp_browser_lite::browser::Browser;
@@ -15,7 +14,7 @@ async fn multi_instance_all_scenarios() {
         std::env::remove_var("FAKE_CHROME_ARGS_LOG");
     }
 
-    let mut futures = Vec::new();
+    let mut launches = tokio::task::JoinSet::new();
     for _ in 0..5 {
         let cfg = BrowserConfig::builder()
             .mode(LaunchMode::LaunchNew)
@@ -24,13 +23,12 @@ async fn multi_instance_all_scenarios() {
             .headless(true)
             .profile(ProfileMode::Ephemeral)
             .build();
-        futures.push(Browser::ensure(cfg));
+        launches.spawn(Browser::ensure(cfg));
     }
 
-    let results = join_all(futures).await;
     let mut browsers = Vec::new();
-    for res in results {
-        browsers.push(res.expect("launch failed"));
+    while let Some(res) = launches.join_next().await {
+        browsers.push(res.expect("task panicked").expect("launch failed"));
     }
 
     let mut ports = Vec::new();
@@ -40,8 +38,13 @@ async fn multi_instance_all_scenarios() {
         ports.push(p);
     }
 
-    let stop_futures = browsers.into_iter().map(|b| async move { b.stop().await });
-    join_all(stop_futures).await;
+    let mut stops = tokio::task::JoinSet::new();
+    for b in browsers {
+        stops.spawn(async move { b.stop().await });
+    }
+    while let Some(res) = stops.join_next().await {
+        let _ = res.expect("stop task panicked");
+    }
 
     // 2. Different proxies
     let dir_a = tempfile::tempdir().unwrap().keep();

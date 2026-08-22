@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use cdp_browser_lite::browser::Browser;
 use cdp_browser_lite::config::{BrowserConfig, LaunchMode, ProfileMode};
+use cdp_browser_lite::test_support::mock_devtools::{MockBehavior, MockChrome};
 use support::fake_chrome::{FakeMode, fake_chrome_path};
-use support::mock_devtools::{MockBehavior, MockChrome};
 
 fn fresh_user_data_dir(label: &str) -> std::path::PathBuf {
     let dir = tempfile::Builder::new()

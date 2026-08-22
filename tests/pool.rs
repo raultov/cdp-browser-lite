@@ -3,8 +3,8 @@ use std::time::Duration;
 use cdp_browser_lite::config::{BrowserConfig, LaunchMode, ProfileMode};
 use cdp_browser_lite::pool::BrowserPool;
 
+use cdp_browser_lite::test_support::mock_devtools::{MockBehavior, MockChrome};
 use support::fake_chrome::{FakeMode, fake_chrome_path};
-use support::mock_devtools::{MockBehavior, MockChrome};
 
 mod support;
 

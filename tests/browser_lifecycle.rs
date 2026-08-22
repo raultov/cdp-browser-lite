@@ -7,8 +7,8 @@ use std::time::Duration;
 use cdp_browser_lite::browser::Browser;
 use cdp_browser_lite::config::{BrowserConfig, LaunchMode, ProfileMode};
 use cdp_browser_lite::error::BrowserError;
+use cdp_browser_lite::test_support::mock_devtools::{MockBehavior, MockChrome};
 use support::fake_chrome::{FakeMode, fake_chrome_path};
-use support::mock_devtools::{MockBehavior, MockChrome};
 
 fn pick_free_port() -> u16 {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();

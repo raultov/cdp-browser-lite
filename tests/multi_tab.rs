@@ -6,7 +6,7 @@ use cdp_browser_lite::BrowserPool;
 use cdp_browser_lite::browser::{Browser, BrowserState};
 use cdp_browser_lite::config::{BrowserConfig, LaunchMode};
 use cdp_browser_lite::error::BrowserError;
-use support::mock_devtools::{MockDevTools, MockWsBehavior};
+use cdp_browser_lite::test_support::mock_devtools::{MockDevTools, MockWsBehavior};
 
 fn attach_only_config(mock: &MockDevTools) -> BrowserConfig {
     BrowserConfig::builder()
