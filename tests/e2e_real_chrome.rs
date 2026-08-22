@@ -1,7 +1,6 @@
 use cdp_browser_lite::browser::Browser;
 use cdp_browser_lite::config::{BrowserConfig, LaunchMode, ProfileMode};
 use cdp_browser_lite::discovery::discover_default;
-
 #[test]
 #[ignore = "requires Chrome installed on the machine"]
 fn given_real_machine_when_discovering_then_finds_executable() {
@@ -90,4 +89,99 @@ async fn given_real_chrome_on_configured_port_when_second_manager_ensures_then_u
 
     b1.stop().await.expect("b1 must stop cleanly");
     b2.stop().await.expect("b2 must stop cleanly");
+}
+
+/// Multi-tab scenario on real Chrome:
+///
+/// 1. Launches a managed headless Chrome on an ephemeral port.
+/// 2. Opens three `data:` tabs and asserts each reports **its own** URL via
+///    `Runtime.evaluate` — the only way to prove `sessionId` routing works
+///    against a real browser (the mock cannot lie here).
+/// 3. Closes one tab and asserts `list_tabs` shrinks by exactly one.
+/// 4. Activates another tab without error.
+/// 5. Stops the browser cleanly.
+#[tokio::test]
+#[ignore = "requires Chrome installed on the machine"]
+async fn given_real_chrome_when_opening_three_tabs_then_each_navigates_independently() {
+    let chrome_path = discover_default().expect("Chrome must be installed for this E2E test");
+
+    let cfg = BrowserConfig::builder()
+        .mode(LaunchMode::LaunchNew)
+        .chrome_path(chrome_path)
+        .port(0)
+        .headless(true)
+        .profile(ProfileMode::Ephemeral)
+        .build();
+
+    let browser = Browser::ensure(cfg)
+        .await
+        .expect("managed headless Chrome must start");
+
+    let urls = [
+        "data:text/html,<h1>tab-one</h1>",
+        "data:text/html,<h1>tab-two</h1>",
+        "data:text/html,<h1>tab-three</h1>",
+    ];
+
+    let mut tabs = Vec::new();
+    for url in urls {
+        tabs.push(browser.new_tab(url).await.expect("new_tab must succeed"));
+    }
+
+    for (tab, expected) in tabs.iter().zip(urls) {
+        let resp = tab
+            .send_raw_command(
+                "Runtime.evaluate",
+                serde_json::json!({
+                    "expression": "document.location.href",
+                    "returnByValue": true,
+                }),
+            )
+            .await
+            .expect("Runtime.evaluate must succeed");
+        let result = resp.result.unwrap_or_default();
+        let actual = result
+            .get("result")
+            .and_then(|v| v.get("value"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        assert_eq!(
+            actual, expected,
+            "each tab must be driven by its own session"
+        );
+    }
+
+    let before = browser.list_tabs().await.expect("list_tabs").len();
+    let closed = tabs.pop().expect("one tab to close");
+    closed.close().await.expect("close must succeed");
+
+    // Chrome removes the closed target asynchronously: poll briefly instead
+    // of asserting on the very next list_tabs.
+    let after = wait_for_tab_count(&browser, before - 1).await;
+    assert_eq!(
+        after,
+        before - 1,
+        "closing one tab must shrink the tab list by exactly one"
+    );
+
+    tabs.first()
+        .expect("a tab remains")
+        .activate()
+        .await
+        .expect("activate must succeed");
+
+    browser.stop().await.expect("browser must stop cleanly");
+}
+
+/// Polls `list_tabs` until the count reaches `expected`, or returns the last
+/// observed count after a bounded wait.
+async fn wait_for_tab_count(browser: &Browser, expected: usize) -> usize {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let count = browser.list_tabs().await.expect("list_tabs").len();
+        if count == expected || std::time::Instant::now() >= deadline {
+            return count;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
