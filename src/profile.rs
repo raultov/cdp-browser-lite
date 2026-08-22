@@ -1,7 +1,9 @@
 use std::fs;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::SystemTime;
 
 use crate::config::ProfileMode;
 use crate::error::BrowserError;
@@ -11,6 +13,7 @@ const EPHEMERAL_PREFIX: &str = "cdp-browser-lite-";
 
 /// Ephemeral profile dirs older than this are considered orphaned and are
 /// swept on the next ephemeral `prepare`.
+#[cfg(unix)]
 const EPHEMERAL_SWEEP_AGE: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug)]
