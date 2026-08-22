@@ -5,6 +5,16 @@ All notable changes to `cdp-browser-lite` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-08-22
+
+### Fixed
+- The `given_predicate_rejecting_port_when_reserving_then_skips_it` test in
+  `ports` asserted the exact `base + 1` port, which was flaky on Windows and
+  macOS CI because the kernel can briefly hold the next ephemeral port after
+  `pick_ephemeral_port` releases its own. The test now asserts the actual
+  contract: the predicate-rejected port is skipped, and the returned port lies
+  within the search range. No production-code behaviour changed.
+
 ## [0.3.0] - 2026-08-22
 
 ### Added
