@@ -128,6 +128,7 @@ pub fn build_args(config: &BrowserConfig, profile: &Profile, port: u16) -> Vec<S
     args.push("--no-first-run".to_string());
     args.push("--no-default-browser-check".to_string());
     args.push("--disable-session-crashed-bubble".to_string());
+    args.push("--hide-crash-restore-bubble".to_string());
     args.push("--noerrdialogs".to_string());
     args.push("--disable-dev-shm-usage".to_string());
 
@@ -326,6 +327,7 @@ mod tests {
         assert!(has_arg(&args, "--no-first-run"));
         assert!(has_arg(&args, "--no-default-browser-check"));
         assert!(has_arg(&args, "--disable-session-crashed-bubble"));
+        assert!(has_arg(&args, "--hide-crash-restore-bubble"));
         assert!(has_arg(&args, "--noerrdialogs"));
         assert!(has_arg(&args, "--disable-dev-shm-usage"));
         assert!(has_arg(&args, "--remote-debugging-port=9222"));
