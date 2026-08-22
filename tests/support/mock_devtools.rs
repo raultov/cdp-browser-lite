@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, oneshot, watch};
@@ -120,8 +122,151 @@ pub struct MockDevTools {
     shutdown_tx: Option<watch::Sender<bool>>,
 }
 
+#[derive(Debug, Clone)]
+struct MockTarget {
+    target_id: String,
+    ty: String,
+    title: String,
+    url: String,
+}
+
+struct TargetRegistry {
+    targets: Vec<MockTarget>,
+    sessions: HashMap<String, String>,
+    next_target: u64,
+    next_session: u64,
+}
+
+impl TargetRegistry {
+    fn seeded() -> Self {
+        Self {
+            targets: vec![
+                MockTarget {
+                    target_id: "T-page-1".to_string(),
+                    ty: "page".to_string(),
+                    title: "about:blank".to_string(),
+                    url: "about:blank".to_string(),
+                },
+                MockTarget {
+                    target_id: "T-devtools".to_string(),
+                    ty: "page".to_string(),
+                    title: "DevTools".to_string(),
+                    url: "devtools://devtools/bundled/devtools_app.html".to_string(),
+                },
+                MockTarget {
+                    target_id: "T-worker".to_string(),
+                    ty: "service_worker".to_string(),
+                    title: "sw.js".to_string(),
+                    url: "https://example.test/sw.js".to_string(),
+                },
+            ],
+            sessions: HashMap::new(),
+            next_target: 2,
+            next_session: 1,
+        }
+    }
+
+    /// Seeds for a mock bound to a fixed port: adds a `T-new` marker target so
+    /// the generation can be distinguished from an earlier one in tests.
+    fn seeded_for_port(http_port: Option<u16>) -> Self {
+        let mut registry = Self::seeded();
+        if http_port.is_some() {
+            registry.targets.push(MockTarget {
+                target_id: "T-new".to_string(),
+                ty: "page".to_string(),
+                title: "about:blank".to_string(),
+                url: "about:blank".to_string(),
+            });
+        }
+        registry
+    }
+}
+
+fn target_infos_json(registry: &TargetRegistry) -> Value {
+    let infos: Vec<Value> = registry
+        .targets
+        .iter()
+        .map(|target| {
+            json!({
+                "targetId": target.target_id,
+                "type": target.ty,
+                "title": target.title,
+                "url": target.url,
+                "attached": registry.sessions.values().any(|id| id == &target.target_id),
+            })
+        })
+        .collect();
+    Value::Array(infos)
+}
+
+fn dispatch_command(registry: &mut TargetRegistry, method: &str, params: &Value) -> Value {
+    match method {
+        "Browser.getVersion" => json!({
+            "product": "MockChrome/1.0",
+            "userAgent": "MockChrome/1.0",
+            "protocolVersion": "1.3"
+        }),
+        "Target.getTargets" => json!({ "targetInfos": target_infos_json(registry) }),
+        "Target.createTarget" => {
+            let url = params
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or("about:blank");
+            let target_id = format!("T-{}", registry.next_target);
+            registry.next_target += 1;
+            registry.targets.push(MockTarget {
+                target_id: target_id.clone(),
+                ty: "page".to_string(),
+                title: url.to_string(),
+                url: url.to_string(),
+            });
+            json!({ "targetId": target_id })
+        }
+        "Target.attachToTarget" => {
+            let target_id = params
+                .get("targetId")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let session_id = format!("S-{}", registry.next_session);
+            registry.next_session += 1;
+            registry
+                .sessions
+                .insert(session_id.clone(), target_id.to_string());
+            json!({ "sessionId": session_id })
+        }
+        "Target.closeTarget" => {
+            let target_id = params
+                .get("targetId")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            registry.targets.retain(|t| t.target_id != target_id);
+            registry.sessions.retain(|_, tid| tid != target_id);
+            json!({ "success": true })
+        }
+        "Target.detachFromTarget" => {
+            if let Some(session_id) = params.get("sessionId").and_then(Value::as_str) {
+                registry.sessions.remove(session_id);
+            }
+            json!({})
+        }
+        "Target.activateTarget" | "Target.setDiscoverTargets" => json!({}),
+        _ => json!({}),
+    }
+}
+
 impl MockDevTools {
     pub async fn start(ws_behavior: MockWsBehavior) -> Self {
+        Self::start_inner(ws_behavior, None).await
+    }
+
+    /// Starts the mock bound to a fixed HTTP port, for tests that need two
+    /// consecutive mock "processes" on the same port. Seeds an extra target
+    /// `T-new` so the second generation is distinguishable.
+    pub async fn start_on(port: u16) -> Self {
+        Self::start_inner(MockWsBehavior::StayOpen, Some(port)).await
+    }
+
+    async fn start_inner(ws_behavior: MockWsBehavior, http_port: Option<u16>) -> Self {
         let connection_count = Arc::new(AtomicU64::new(0));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (drop_new_tx, _) = broadcast::channel::<()>(16);
@@ -129,7 +274,9 @@ impl MockDevTools {
         let ws_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let ws_port = ws_listener.local_addr().unwrap().port();
 
-        let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let registry = Arc::new(Mutex::new(TargetRegistry::seeded_for_port(http_port)));
+
+        let http_listener = bind_http_listener(http_port).await;
         let http_port = http_listener.local_addr().unwrap().port();
 
         let ws_port_for_json = ws_port;
@@ -174,11 +321,12 @@ impl MockDevTools {
                     accept_res = ws_listener.accept() => {
                         if let Ok((stream, _)) = accept_res {
                             let cnt = Arc::clone(&cnt);
+                            let registry = Arc::clone(&registry);
                             let mut drop_new = drop_new.subscribe();
                             let beh = ws_behavior;
                             tokio::spawn(async move {
                                 cnt.fetch_add(1, Ordering::SeqCst);
-                                handle_ws(stream, &mut drop_new, beh).await;
+                                handle_ws(stream, registry, &mut drop_new, beh).await;
                                 cnt.fetch_sub(1, Ordering::SeqCst);
                             });
                         }
@@ -203,6 +351,23 @@ impl MockDevTools {
     pub fn drop_new_connections(&mut self) {
         if let Some(ref tx) = self.drop_new_tx {
             let _ = tx.send(());
+        }
+    }
+}
+
+async fn bind_http_listener(http_port: Option<u16>) -> TcpListener {
+    match http_port {
+        None => TcpListener::bind("127.0.0.1:0").await.unwrap(),
+        Some(port) => {
+            // The previous owner of the port may have just dropped its
+            // listener; give the OS a moment to release it before giving up.
+            for _ in 0..100 {
+                if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)).await {
+                    return listener;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("could not bind fixed HTTP port {port} for the mock");
         }
     }
 }
@@ -275,6 +440,7 @@ async fn handle_http(mut stream: TcpStream, ws_port: u16) {
 
 async fn handle_ws(
     stream: TcpStream,
+    registry: Arc<Mutex<TargetRegistry>>,
     drop_new: &mut broadcast::Receiver<()>,
     behavior: MockWsBehavior,
 ) {
@@ -305,21 +471,21 @@ async fn handle_ws(
                             .get("method")
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
+                        let params = request.get("params").unwrap_or(&Value::Null);
 
-                        let response = match method {
-                            "Browser.getVersion" => json!({
+                        let mut response = {
+                            let mut registry = registry.lock().unwrap();
+                            json!({
                                 "id": id,
-                                "result": {
-                                    "product": "MockChrome/1.0",
-                                    "userAgent": "MockChrome/1.0",
-                                    "protocolVersion": "1.3"
-                                }
-                            }),
-                            _ => json!({
-                                "id": id,
-                                "result": {}
-                            }),
+                                "result": dispatch_command(&mut registry, method, params),
+                            })
                         };
+
+                        // CDP echoes the sessionId on responses to session-scoped
+                        // commands, so event routing by session can be tested.
+                        if let Some(session_id) = request.get("sessionId") {
+                            response["sessionId"] = session_id.clone();
+                        }
 
                         let _ = ws_sink
                             .send(Message::Text(response.to_string().into()))
