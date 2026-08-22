@@ -55,6 +55,14 @@ pub mod probe;
 pub mod process;
 pub mod profile;
 
+/// Test support utilities, available only with the `test-support` cargo feature.
+///
+/// Re-exports the in-process DevTools HTTP/WebSocket mocks so downstream crates
+/// can drive the library without spawning a real browser. See
+/// [`test_support`](self) for details.
+#[cfg(feature = "test-support")]
+pub mod test_support;
+
 // Re-exports
 pub use browser::Browser;
 pub use cdp_lite::browser::{BrowserClient, TargetInfo};
