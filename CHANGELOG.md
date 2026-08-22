@@ -5,6 +5,27 @@ All notable changes to `cdp-browser-lite` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-08-22
+
+### Added
+- `Browser::browser_client()`: a cached, liveness-checked connection to the
+  browser-level endpoint (`/json/version`), the foundation for multi-tab driving.
+- Five tab delegations on `Browser` — `new_tab`, `attach_tab`, `attach_to_all_tabs`,
+  `list_tabs`, `close_tab` — all routed over the shared browser-level connection.
+- Re-exports of `Tab`, `TargetInfo` and `BrowserClient` for convenient tab work.
+- Full multi-tab support in the devtools mock, plus fidelity and lifecycle test
+  coverage (including a real-Chrome E2E proving per-session routing).
+
+### Changed
+- Internal connection management refactored around `ensure_process_ready` /
+  `relaunch`; both the page-level and browser-level caches are invalidated on
+  stop, restart and relaunch.
+
+### Notes
+- `Browser::client()` is unchanged and fully backward compatible.
+- Calling both `client()` and `browser_client()` opens two WebSocket connections
+  (page-level vs browser-level endpoints). This is intentional.
+
 ## [0.2.4] - 2026-08-19
 
 ### Fixed
