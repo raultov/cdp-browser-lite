@@ -224,7 +224,7 @@ impl Browser {
             port: config.port,
             profile: &profile,
             config: &config,
-            env: vec![],
+            env: config.env_extra.clone(),
         };
 
         let (process, actual_port) = spawn(spec).await?;

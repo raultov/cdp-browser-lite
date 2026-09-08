@@ -54,6 +54,7 @@ pub struct BrowserConfig {
     pub(crate) keep_alive_on_drop: bool,
     pub(crate) auto_relaunch: bool,
     pub(crate) no_sandbox: Option<bool>,
+    pub(crate) env_extra: Vec<(String, String)>,
 }
 
 impl BrowserConfig {
@@ -131,6 +132,7 @@ pub struct BrowserConfigBuilder {
     keep_alive_on_drop: bool,
     auto_relaunch: bool,
     no_sandbox: Option<bool>,
+    env_extra: Vec<(String, String)>,
 }
 
 impl BrowserConfigBuilder {
@@ -228,6 +230,30 @@ impl BrowserConfigBuilder {
         self
     }
 
+    /// Adds an environment variable for the spawned Chrome process.
+    ///
+    /// The child inherits the parent's environment; these entries are applied
+    /// on top (later calls overwrite earlier ones for the same key). Useful
+    /// for injecting desktop-session variables (e.g. `DBUS_SESSION_BUS_ADDRESS`)
+    /// when the parent process runs with a sanitized environment.
+    pub fn env_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env_extra.push((key.into(), value.into()));
+        self
+    }
+
+    /// Adds several environment variables at once. Later entries win.
+    pub fn env_vars<I, K, V>(mut self, vars: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        for (k, v) in vars {
+            self.env_extra.push((k.into(), v.into()));
+        }
+        self
+    }
+
     pub fn build(self) -> BrowserConfig {
         BrowserConfig {
             mode: self.mode,
@@ -247,6 +273,7 @@ impl BrowserConfigBuilder {
             keep_alive_on_drop: self.keep_alive_on_drop,
             auto_relaunch: self.auto_relaunch,
             no_sandbox: self.no_sandbox,
+            env_extra: self.env_extra,
         }
     }
 }
@@ -271,6 +298,7 @@ impl Default for BrowserConfigBuilder {
             keep_alive_on_drop: false,
             auto_relaunch: false,
             no_sandbox: None,
+            env_extra: Vec::new(),
         }
     }
 }
@@ -347,6 +375,25 @@ mod tests {
         assert!(!cfg.keep_alive_on_drop);
         assert!(!cfg.auto_relaunch);
         assert!(cfg.no_sandbox.is_none());
+        assert!(cfg.env_extra.is_empty());
+    }
+
+    #[test]
+    fn given_env_vars_when_building_config_then_entries_are_kept_in_order() {
+        let cfg = BrowserConfig::builder()
+            .env_var("A", "1")
+            .env_vars([("B", "2"), ("C", "3")])
+            .env_var("A", "override")
+            .build();
+        assert_eq!(
+            cfg.env_extra,
+            vec![
+                ("A".to_string(), "1".to_string()),
+                ("B".to_string(), "2".to_string()),
+                ("C".to_string(), "3".to_string()),
+                ("A".to_string(), "override".to_string()),
+            ]
+        );
     }
 
     #[test]

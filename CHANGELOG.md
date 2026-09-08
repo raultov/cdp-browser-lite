@@ -5,6 +5,15 @@ All notable changes to `cdp-browser-lite` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-09-08
+
+### Added
+- `BrowserConfigBuilder::env_var` and `env_vars`: inject custom environment
+  variables into the spawned Chrome process. Child processes inherit the parent's
+  environment; entries set via `env_var` are applied on top. Useful for passing
+  desktop-session variables (`DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`) when
+  the parent process runs with a sanitized environment.
+
 ## [0.3.4] - 2026-08-22
 
 ### Fixed
