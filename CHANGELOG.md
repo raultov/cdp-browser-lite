@@ -5,6 +5,18 @@ All notable changes to `cdp-browser-lite` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-04
+
+### Changed
+
+- **Breaking:** `cdp-lite` is now 0.3, so the re-exported `CdpError` gains
+  `Lagged { skipped: u64 }` and is `#[non_exhaustive]`. Match with a wildcard
+  arm; `CdpError` consumers no longer need to parse error text to detect an
+  event-stream lag.
+- `BrowserClient::connect_with_capacity` is re-exported through `cdp-lite` 0.3,
+  for sessions that drive many tabs over one connection and need a larger event
+  ring than `client::EVENT_CHANNEL_CAPACITY` (4096).
+
 ## [0.3.5] - 2026-09-08
 
 ### Added
