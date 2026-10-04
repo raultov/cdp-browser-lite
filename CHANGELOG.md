@@ -5,6 +5,20 @@ All notable changes to `cdp-browser-lite` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Flaky `ports` tests on Windows CI (`given_reserved_port_when_reserving_again_then_skips_it`
+  failed with 55899 returned where 55898 was expected). `pick_ephemeral_port`
+  hands out an OS-assigned port without holding the socket - `reserve_near`
+  binds candidates itself - so the port can be claimed before the allocator gets
+  to it. Tests now assert the allocator's contract (candidates are tried in
+  order, a reserved port is never handed out twice, a dropped reservation is
+  reusable) instead of exact port numbers, following the approach already taken
+  for the predicate-rejection test when it flaked on macOS CI. `pick_ephemeral_port`
+  also verifies the port is rebindable before handing it out.
+
 ## [0.4.0] - 2026-10-04
 
 ### Changed

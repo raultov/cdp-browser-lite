@@ -98,11 +98,36 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// Returns an ephemeral port that is free to bind at this instant.
+    ///
+    /// The socket is **not** held: `reserve_near` binds candidates itself, so
+    /// the port is released again immediately. That leaves a window in which a
+    /// concurrent test, or the OS's own dynamic-port bookkeeping (Windows holds
+    /// a just-released ephemeral port briefly), can claim the port before the
+    /// allocator gets to it. Rebinding once here at least guarantees the port
+    /// was usable when it was handed out, which closes the commonest failure
+    /// mode seen on Windows CI.
+    ///
+    /// Because the window cannot be closed from here, tests must assert on the
+    /// allocator's contract (in range, never reused) and never on an exact port
+    /// number. This is the same reasoning as commit `672100b`, which relaxed the
+    /// predicate-rejection test after it flaked on macOS CI.
     fn pick_ephemeral_port() -> u16 {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        port
+        for _ in 0..100 {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+                return port;
+            }
+        }
+        panic!("could not find a rebindable ephemeral port after 100 attempts");
+    }
+
+    /// Whether `port` is one of the `tries` candidates `reserve_near` would
+    /// consider, using the same wrapping arithmetic the allocator does.
+    fn in_search_range(base: u16, tries: u16, port: u16) -> bool {
+        (0..tries).any(|offset| base.wrapping_add(offset) == port)
     }
 
     #[cfg(unix)]
@@ -131,11 +156,32 @@ mod tests {
     async fn given_free_base_when_reserving_then_returns_base() {
         let alloc = PortAllocator::new();
         let base = pick_ephemeral_port();
+        let tried = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let tried_in = Arc::clone(&tried);
         let res = alloc
-            .reserve_near(PortSearch::new("127.0.0.1", base, 5), |_| true)
+            .reserve_near(PortSearch::new("127.0.0.1", base, 5), move |p| {
+                tried_in.lock().unwrap().push(p);
+                true
+            })
             .await
             .unwrap();
-        assert_eq!(res.port(), base);
+
+        // The allocator must consider candidates in ascending offset order and
+        // stop at the first it can claim, which is what makes it return `base`
+        // when `base` is free. Asserting `res.port() == base` exactly is not
+        // possible here: `pick_ephemeral_port` cannot hold the socket, so the
+        // OS or a concurrent test may claim `base` in the gap and the allocator
+        // then correctly moves to the next candidate.
+        assert_eq!(
+            tried.lock().unwrap().first().copied(),
+            Some(base),
+            "the base candidate must be tried first"
+        );
+        assert!(
+            in_search_range(base, 5, res.port()),
+            "reservation must be a candidate of the search range, got {}",
+            res.port()
+        );
     }
 
     #[tokio::test]
@@ -150,28 +196,64 @@ mod tests {
             .reserve_near(PortSearch::new("127.0.0.1", base, 5), |_| true)
             .await
             .unwrap();
-        assert_eq!(res1.port(), base);
-        assert_eq!(res2.port(), base + 1);
+
+        // The contract: a port the allocator has reserved is never handed out
+        // twice. Asserting exact values (`base`, then `base + 1`) is fragile:
+        // `pick_ephemeral_port` releases the socket before the allocator binds
+        // it, so the OS or a concurrent test can take `base` or `base + 1` and
+        // legitimately push the result to the next free slot. That is what broke
+        // on Windows CI (55899 returned where 55898 was expected).
+        assert_ne!(
+            res2.port(),
+            res1.port(),
+            "a reserved port must never be handed out twice"
+        );
+        assert!(
+            in_search_range(base, 5, res1.port()),
+            "first reservation must be a candidate of the search range, got {}",
+            res1.port()
+        );
+        assert!(
+            in_search_range(base, 5, res2.port()),
+            "second reservation must be a candidate of the search range, got {}",
+            res2.port()
+        );
     }
 
     #[tokio::test]
     async fn given_reservation_dropped_when_reserving_then_port_is_reusable() {
         let alloc = PortAllocator::new();
         let base = pick_ephemeral_port();
-        {
-            let _res1 = alloc
+        let first_port = {
+            let res1 = alloc
                 .reserve_near(PortSearch::new("127.0.0.1", base, 5), |_| true)
                 .await
                 .unwrap();
-        }
+            res1.port()
+        };
         // Yield to allow Drop task to run
         tokio::time::sleep(Duration::from_millis(10)).await;
 
+        // Accept nothing but the released port. If Drop had failed to give it
+        // back, the allocator would still exclude it and, with no other
+        // acceptable candidate, report a PortConflict - so this asserts exact
+        // reusability without betting on which port `pick_ephemeral_port`
+        // happened to hand out.
         let res2 = alloc
-            .reserve_near(PortSearch::new("127.0.0.1", base, 5), |_| true)
+            .reserve_near(PortSearch::new("127.0.0.1", base, 5), |p| p == first_port)
             .await
-            .unwrap();
-        assert_eq!(res2.port(), base);
+            .unwrap_or_else(|e| {
+                panic!(
+                    "a dropped reservation must be handed out again, got {e:?} \
+                     (the port may have been claimed by the OS during the sleep)"
+                )
+            });
+
+        assert_eq!(
+            res2.port(),
+            first_port,
+            "a dropped reservation must be handed out again"
+        );
     }
 
     #[cfg(unix)]
@@ -184,7 +266,21 @@ mod tests {
             .reserve_near(PortSearch::new("127.0.0.1", base, 5), |_| true)
             .await
             .unwrap();
-        assert_eq!(res.port(), base + 1);
+
+        // `base` is held by a live listener, so it must be skipped. Do not
+        // assert the exact `base + 1`: the contiguous block above is released
+        // except for `base`, so a concurrent test can claim `base + 1` in
+        // between and push the result further along the range.
+        assert_ne!(
+            res.port(),
+            base,
+            "an occupied port must never be handed out"
+        );
+        assert!(
+            in_search_range(base, 5, res.port()),
+            "reservation must be a candidate of the search range, got {}",
+            res.port()
+        );
     }
 
     #[tokio::test]
@@ -201,7 +297,7 @@ mod tests {
         // (observed on macOS CI).
         assert_ne!(res.port(), base, "predicate must reject base");
         assert!(
-            (base..base + 5).contains(&res.port()),
+            in_search_range(base, 5, res.port()),
             "reserved port must be within the search range, got {}",
             res.port()
         );
