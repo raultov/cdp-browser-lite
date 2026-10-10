@@ -1,8 +1,8 @@
 [package]
 name = "cdp-browser-lite"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
-description = "Control total del ciclo de vida de instancias de Chrome y acceso CDP"
+description = "Full lifecycle control of Chrome instances and CDP access"
 repository = "https://github.com/raultov/cdp-browser-lite"
 license = "MIT"
 keywords = ["cdp", "chrome", "browser", "automation", "headless"]

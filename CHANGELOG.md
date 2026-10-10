@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-10
+
+### Changed
+
+- Updated crate description in `Cargo.toml` to English ("Full lifecycle control of Chrome instances and CDP access").
+
 ### Fixed
 
 - Flaky `ports` tests on Windows CI (`given_reserved_port_when_reserving_again_then_skips_it`
@@ -268,6 +274,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supported platform, plus an E2E job that installs Chrome and runs the
   ignored tests.
 
+[0.4.1]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.4.1
+[0.4.0]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.4.0
+[0.3.5]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.3.5
 [0.3.4]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.3.4
 [0.3.3]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.3.3
 [0.3.2]: https://github.com/raultov/cdp-browser-lite/releases/tag/v0.3.2
